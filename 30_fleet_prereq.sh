@@ -1,100 +1,124 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/00_common.sh"
 
+# ========================
+# Fleet prereq preparation
+# ========================
+#  - Ensures Fleet Server policy exists (or creates)
+#  - Creates enrollment token
+#  - Creates Fleet Server service token
+#  - Saves outputs to --out-dir or stdout
+#
+# Requires: curl, jq
+# ========================
+
+# ---------- functions ----------
 print_help() {
-  cat <<'EOF'
-Usage:
-  30_fleet_prereq.sh --es-url <https://es:9200> --es-user <user> --es-pass <pass> \
-    --kibana-url <https://kib:5601> --kbn-user <user> --kbn-pass <pass> \
-    [--ca <path>] [--policy-name <name>] [--out-dir <dir>] [--ssh-user <user>]
-
-What it does:
-  - Ensures Fleet Server service token exists in Elasticsearch; stores it locally.
-  - Ensures Agent Policy exists in Kibana; fetches/creates an Enrollment Token; stores it locally.
+  cat <<EOF
+Usage: $0 --es-url <url> --es-user <user> --es-pass <pass> [--ca <ca-file>]
+          [--policy-name <name>] [--out-dir <dir>]
 
 Options:
-  --policy-name <name>    Default: Observability-Default
-  --out-dir <dir>         Default: ./secrets
-
-Examples:
-  ./30_fleet_prereq.sh --es-url https://es:9200 --es-user svc --es-pass '***' \
-    --kibana-url https://kib:5601 --kbn-user svc --kbn-pass '***' --ca cfg/tls/ca.crt
+  --es-url         Elasticsearch URL (e.g. https://es01:9200)
+  --es-user        Elasticsearch username
+  --es-pass        Elasticsearch password
+  --ca             Path to CA certificate (optional; if not given, -k used)
+  --policy-name    Fleet Server policy name (default: observability)
+  --out-dir        Directory to save tokens (default: stdout only)
+  --help           Show this help
 EOF
-  exit 0
 }
 
-[[ $# -eq 0 ]] && print_help
+log() { echo "[INFO ] $*"; }
+err() { echo "[ERROR] $*" >&2; }
+die() { err "$*"; exit 1; }
 
-require_cmd curl jq
-
-ES_URL="" ES_USER="" ES_PASS=""
-KBN_URL="" KBN_USER="" KBN_PASS=""
+# ---------- parse args ----------
+ES_URL=""
+ES_USER=""
+ES_PASS=""
 CA_FILE=""
-POLICY_NAME="Observability-Default"
-OUT_DIR="./secrets"
+POLICY_NAME="observability"
+OUT_DIR=""
 
-ARGS=("$@")
-# Pre-parse to capture --ssh-user early
-for ((i=0;i<${#ARGS[@]};i++)); do
-  case "${ARGS[i]}" in --ssh-user) export DEFAULT_SSH_USER="${ARGS[i+1]}";; esac
-done
-
-i=0
-while [[ $i -lt ${#ARGS[@]} ]]; do
-  case "${ARGS[i]}" in
-    --es-url) ES_URL="${ARGS[i+1]}"; ((i+=2));;
-    --es-user) ES_USER="${ARGS[i+1]}"; ((i+=2));;
-    --es-pass) ES_PASS="${ARGS[i+1]}"; ((i+=2));;
-    --kibana-url) KBN_URL="${ARGS[i+1]}"; ((i+=2));;
-    --kbn-user) KBN_USER="${ARGS[i+1]}"; ((i+=2));;
-    --kbn-pass) KBN_PASS="${ARGS[i+1]}"; ((i+=2));;
-    --ca) CA_FILE="${ARGS[i+1]}"; ((i+=2));;
-    --policy-name) POLICY_NAME="${ARGS[i+1]}"; ((i+=2));;
-    --out-dir) OUT_DIR="${ARGS[i+1]}"; ((i+=2));;
-    --help) print_help;;
-    --ssh-user) ((i+=2));; # already consumed
-    *) ((i+=1));;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --es-url) ES_URL="$2"; shift 2;;
+    --es-user) ES_USER="$2"; shift 2;;
+    --es-pass) ES_PASS="$2"; shift 2;;
+    --ca) CA_FILE="$2"; shift 2;;
+    --policy-name) POLICY_NAME="$2"; shift 2;;
+    --out-dir) OUT_DIR="$2"; shift 2;;
+    --help) print_help; exit 0;;
+    *) die "Unknown arg: $1";;
   esac
 done
 
-LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_30_fleet_prereq.log"
-mkdir -p "$OUT_DIR"
+[[ -z "$ES_URL" || -z "$ES_USER" || -z "$ES_PASS" ]] && die "Missing required params"
 
-# 1) Ensure Fleet Server service token (named)
-log "Ensuring Fleet Server service token exists (service: elastic/fleet-server)"
+if [[ -n "$OUT_DIR" ]]; then
+  mkdir -p "$OUT_DIR"
+fi
+
+# curl wrapper
+curl_es() {
+  local method="$1"; shift
+  local url="$1"; shift
+  local args=("$@")
+  if [[ -n "$CA_FILE" ]]; then
+    curl --silent --show-error --fail -X "$method" \
+      --user "$ES_USER:$ES_PASS" --cacert "$CA_FILE" "$url" "${args[@]}"
+  else
+    curl --silent --show-error --fail -k -X "$method" \
+      --user "$ES_USER:$ES_PASS" "$url" "${args[@]}"
+  fi
+}
+
+# ---------- 1) Ensure Fleet Server policy ----------
+log "Ensuring Fleet Server policy: $POLICY_NAME"
+POLICY_ID=$(curl_es GET "$ES_URL/api/fleet/agent_policies?perPage=1000" -H "kbn-xsrf: true" 2>/dev/null | jq -r --arg NAME "$POLICY_NAME" '.items[] | select(.name==$NAME) | .id' || true)
+
+if [[ -z "$POLICY_ID" ]]; then
+  log "Creating Fleet Server policy $POLICY_NAME"
+  POLICY_ID=$(curl_es POST "$ES_URL/api/fleet/agent_policies" \
+    -H "Content-Type: application/json" -H "kbn-xsrf: true" \
+    -d "{\"name\":\"$POLICY_NAME\",\"namespace\":\"default\",\"monitoring_enabled\":[\"logs\",\"metrics\"]}" \
+    | jq -r '.item.id')
+fi
+[[ -n "$POLICY_ID" ]] || die "Failed to ensure Fleet Server policy"
+
+[[ -n "$OUT_DIR" ]] && echo -n "$POLICY_ID" > "$OUT_DIR/fleet_policy_id"
+log "Policy ID: $POLICY_ID"
+
+# ---------- 2) Enrollment token ----------
+log "Creating enrollment token"
+ENROLL_TOKEN=$(curl_es POST "$ES_URL/api/fleet/enrollment_api_keys" \
+  -H "Content-Type: application/json" -H "kbn-xsrf: true" \
+  -d "{\"policy_id\":\"$POLICY_ID\"}" \
+  | jq -r '.item.api_key')
+[[ -n "$ENROLL_TOKEN" ]] || die "Failed to create enrollment token"
+
+[[ -n "$OUT_DIR" ]] && echo -n "$ENROLL_TOKEN" > "$OUT_DIR/fleet_enrollment_token"
+log "Enrollment token saved"
+
+# ---------- 3) Fleet Server service token ----------
+log "Ensuring Fleet Server service token (elastic/fleet-server)"
 NAME="fleet-server-service-token"
 CREATE_URL="$ES_URL/_security/service/elastic/fleet-server/credential/token/$NAME"
-RESP="$(curl_es "$CREATE_URL" "$ES_USER" "$ES_PASS" "$CA_FILE" || true)"
+
+RESP="$(curl_es POST "$CREATE_URL" || true)"
 TOKEN_VAL="$(echo "$RESP" | jq -r '.token.value // empty')"
 [[ -n "$TOKEN_VAL" ]] || die "Could not obtain Fleet Server service token from $CREATE_URL"
-echo -n "$TOKEN_VAL" > "$OUT_DIR/fleet_server_service_token"
-log "Saved: $OUT_DIR/fleet_server_service_token"
 
-# 2) Ensure Agent Policy and Enrollment Token
-log "Ensuring agent policy '$POLICY_NAME' exists in Kibana"
-LIST="$(curl_kbn_json GET "$KBN_URL/api/fleet/agent_policies?perPage=100" "$KBN_USER" "$KBN_PASS" "$CA_FILE" || true)"
-POLICY_ID="$(echo "$LIST" | jq -r --arg n "$POLICY_NAME" '.items[]?|select(.name==$n)|.id' | head -n1)"
-if [[ -z "$POLICY_ID" || "$POLICY_ID" == "null" ]]; then
-  BODY="$(jq -n --arg name "$POLICY_NAME" --arg ns "default" '{name:$name, namespace:$ns, description:"Observability default (air-gapped)"}')"
-  RESP="$(curl_kbn_json POST "$KBN_URL/api/fleet/agent_policies" "$KBN_USER" "$KBN_PASS" "$CA_FILE" "$BODY")"
-  POLICY_ID="$(echo "$RESP" | jq -r '.item.id')"
+[[ -n "$OUT_DIR" ]] && echo -n "$TOKEN_VAL" > "$OUT_DIR/fleet_server_service_token"
+log "Service token saved"
+
+# ---------- Summary ----------
+echo
+log "Fleet prereqs ready:"
+echo "  Policy ID:      $POLICY_ID"
+echo "  Enrollment key: ${ENROLL_TOKEN:0:8}..."
+echo "  Service token:  ${TOKEN_VAL:0:8}..."
+if [[ -n "$OUT_DIR" ]]; then
+  log "Files saved in $OUT_DIR/"
 fi
-[[ -n "$POLICY_ID" && "$POLICY_ID" != "null" ]] || die "Failed to ensure agent policy"
-
-log "Ensuring enrollment token for policy id: $POLICY_ID"
-TOKENS="$(curl_kbn_json GET "$KBN_URL/api/fleet/enrollment_api_keys" "$KBN_USER" "$KBN_PASS" "$CA_FILE" || true)"
-ENR_TOKEN="$(echo "$TOKENS" | jq -r --arg id "$POLICY_ID" '.list[]?|select(.policy_id==$id)|.api_key' | head -n1)"
-if [[ -z "$ENR_TOKEN" || "$ENR_TOKEN" == "null" ]]; then
-  BODY="$(jq -n --arg id "$POLICY_ID" '{policy_id:$id}')"
-  RESP="$(curl_kbn_json POST "$KBN_URL/api/fleet/enrollment_api_keys" "$KBN_USER" "$KBN_PASS" "$CA_FILE" "$BODY")"
-  ENR_TOKEN="$(echo "$RESP" | jq -r '.item.api_key')"
-fi
-[[ -n "$ENR_TOKEN" && "$ENR_TOKEN" != "null" ]] || die "Failed to obtain enrollment token"
-
-OUT_TOKEN="$OUT_DIR/enrollment_token_${POLICY_ID}"
-echo -n "$ENR_TOKEN" > "$OUT_TOKEN"
-log "Saved: $OUT_TOKEN"
-
-log "Fleet prerequisites ready."
