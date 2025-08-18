@@ -9,21 +9,25 @@ print_help() {
 Usage:
   30_fleet_prereq.sh \
     --es-url <https://es:9200> --es-user <user> --es-pass <pass> \
-    --kibana-url <https://kib:5601> --kbn-user <user> --kbn-pass <pass> \
+    --kibana-url <https://kib:5601> \
     --policy-name <name> \
+    [--kbn-user <user>] [--kbn-pass <pass>] \
     [--ca <path>] [--out-dir <dir>] [--ssh-user <user>]
 
 What it does:
   - Initializes Fleet in Kibana (idempotent).
-  - Creates a Fleet Server service token in Elasticsearch (idempotent; on 409 creates a new name with timestamp).
+  - Creates a Fleet Server service token in Elasticsearch (idempotent; on 409 retries with timestamped name).
   - Ensures the Agent Policy exists in Kibana; creates it if missing.
-  - Ensures an Enrollment Token exists for the policy; creates it if missing.
+  - Ensures an Enrollment Token exists for that policy; creates it if missing.
   - Saves tokens to --out-dir (default: ./secrets).
+
+Notes:
+  - If --kbn-user/--kbn-pass are not provided, the script will use --es-user/--es-pass for Kibana API calls.
 
 Examples:
   ./30_fleet_prereq.sh \
     --es-url https://es:9200 --es-user elastic --es-pass '***' \
-    --kibana-url https://kib:5601 --kbn-user svc --kbn-pass '***' \
+    --kibana-url https://kib:5601 \
     --policy-name Observability-Default \
     --ca cfg/tls/ca.crt --out-dir ./secrets
 EOF
@@ -38,7 +42,7 @@ KBN_URL="" KBN_USER="" KBN_PASS=""
 CA_FILE="" OUT_DIR="./secrets" POLICY_NAME=""
 
 ARGS=("$@")
-# Pre-parse --ssh-user early (for consistency with other scripts, even though this one doesn’t SSH)
+# Pre-parse --ssh-user (kept for consistency with other scripts)
 for ((i=0;i<${#ARGS[@]};i++)); do
   case "${ARGS[i]}" in --ssh-user) export DEFAULT_SSH_USER="${ARGS[i+1]}";; esac
 done
@@ -56,20 +60,24 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --ca) CA_FILE="${ARGS[i+1]}"; ((i+=2));;
     --out-dir) OUT_DIR="${ARGS[i+1]}"; ((i+=2));;
     --help) print_help;;
-    --ssh-user) ((i+=2));; # consumed above
+    --ssh-user) ((i+=2));; # consumed
     *) ((i+=1));;
   esac
 done
 
-# Require explicit policy name (safer than defaulting silently)
-[[ -n "$ES_URL" && -n "$ES_USER" && -n "$ES_PASS" ]] || die "Missing ES connection args"
-[[ -n "$KBN_URL" && -n "$KBN_USER" && -n "$KBN_PASS" ]] || die "Missing Kibana connection args"
+# Defaults: Kibana creds inherit from ES creds if not provided
+[[ -z "$KBN_USER" ]] && KBN_USER="$ES_USER"
+[[ -z "$KBN_PASS" ]] && KBN_PASS="$ES_PASS"
+
+# Validate required args
+[[ -n "$ES_URL" && -n "$ES_USER" && -n "$ES_PASS" ]] || die "Missing ES connection args (--es-url/--es-user/--es-pass)"
+[[ -n "$KBN_URL" ]] || die "Missing --kibana-url"
 [[ -n "$POLICY_NAME" ]] || die "Missing required --policy-name"
 
 LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_30_fleet_prereq.log"
 mkdir -p "$OUT_DIR"
 
-# Helper: curl to Kibana with/without CA (no --fail so we can read body on 4xx)
+# Helpers (no --fail to surface error bodies)
 _kbn_curl() {
   local method="$1"; shift
   local url="$1"; shift
@@ -83,7 +91,6 @@ _kbn_curl() {
   fi
 }
 
-# Helper: curl to ES with/without CA (no --fail)
 _es_curl() {
   local method="$1"; shift
   local url="$1"; shift
@@ -94,51 +101,44 @@ _es_curl() {
   fi
 }
 
+# 0) Ensure Fleet is initialized (idempotent)
 log "Ensuring Fleet is initialized in Kibana"
 SETUP_RESP="$(_kbn_curl POST "$KBN_URL/api/fleet/setup")" || true
-# Optional: surface status if present
 echo "$SETUP_RESP" | jq -r '.status // empty' >/dev/null 2>&1 || true
 
-# Quick reachability check (optional)
+# Optional reachability info
 if STATUS="$(_kbn_curl GET "$KBN_URL/api/status")"; then
   log "Kibana seems reachable (HTTP 200) – proceeding."
 else
-  warn "Kibana status endpoint check failed; continuing anyway."
+  warn "Kibana status endpoint check failed; proceeding anyway."
 fi
 
-# 1) Ensure Fleet Server service token
+# 1) Fleet Server service token
 log "Ensuring Fleet Server service token exists (service: elastic/fleet-server)"
 BASE_NAME="fleet-server-service-token"
 CREATE_URL="$ES_URL/_security/service/elastic/fleet-server/credential/token/$BASE_NAME"
 
-# Attempt #1 with canonical name, capture HTTP code
-RESP1="$(_es_curl POST "$CREATE_URL" || true)"
-CODE1="$(echo "$RESP1" | jq -r '."status" // empty' 2>/dev/null || true)"
-# Some clusters don’t echo 'status' in body; capture via -w if needed:
-if [[ -z "$CODE1" ]]; then
-  if [[ -n "$CA_FILE" ]]; then
-    RESP_RAW="$(curl -sS -w '\n%{http_code}' -X POST -u "$ES_USER:$ES_PASS" --cacert "$CA_FILE" "$CREATE_URL" || true)"
-  else
-    RESP_RAW="$(curl -sS -w '\n%{http_code}' -k -X POST -u "$ES_USER:$ES_PASS" "$CREATE_URL" || true)"
-  fi
-  RESP1="$(echo "$RESP_RAW" | sed -n '1,$-1p')"
-  CODE1="$(echo "$RESP_RAW" | tail -n1)"
+# Try canonical name; capture HTTP code
+if [[ -n "$CA_FILE" ]]; then
+  RESP_RAW="$(curl -sS -w '\n%{http_code}' -X POST -u "$ES_USER:$ES_PASS" --cacert "$CA_FILE" "$CREATE_URL" || true)"
+else
+  RESP_RAW="$(curl -sS -w '\n%{http_code}' -k -X POST -u "$ES_USER:$ES_PASS" "$CREATE_URL" || true)"
 fi
+RESP_BODY="$(echo "$RESP_RAW" | sed -n '1,$-1p')"
+RESP_CODE="$(echo "$RESP_RAW" | tail -n1)"
 
 TOKEN_VAL=""
-if [[ "$CODE1" == "201" ]]; then
-  TOKEN_VAL="$(echo "$RESP1" | jq -r '.token.value // empty')"
-elif [[ "$CODE1" == "409" ]]; then
-  # Name already exists: create a new one with a timestamp suffix
+if [[ "$RESP_CODE" == "201" ]]; then
+  TOKEN_VAL="$(echo "$RESP_BODY" | jq -r '.token.value // empty')"
+elif [[ "$RESP_CODE" == "409" ]]; then
   SUF="$(date +%Y%m%d%H%M%S)"
   NEW_NAME="${BASE_NAME}-${SUF}"
   CREATE_URL2="$ES_URL/_security/service/elastic/fleet-server/credential/token/$NEW_NAME"
   RESP2="$(_es_curl POST "$CREATE_URL2" || true)"
   TOKEN_VAL="$(echo "$RESP2" | jq -r '.token.value // empty')"
 else
-  # Could be 4xx/5xx; show body to the user
   error "Could not obtain Fleet Server service token. Response:"
-  echo "[ES] $RESP1" >&2
+  echo "[ES] HTTP $RESP_CODE :: $RESP_BODY" >&2
   die "Aborting."
 fi
 
@@ -165,7 +165,7 @@ if [[ -z "$POLICY_ID" || "$POLICY_ID" == "null" ]]; then
 fi
 [[ -n "$POLICY_ID" && "$POLICY_ID" != "null" ]] || die "Failed to ensure agent policy"
 
-# 3) Ensure Enrollment Token for that policy
+# 3) Ensure Enrollment Token
 log "Ensuring enrollment token for policy id: $POLICY_ID"
 TOKENS="$(_kbn_curl GET "$KBN_URL/api/fleet/enrollment_api_keys" || true)"
 ENR_TOKEN="$(echo "$TOKENS" | jq -r --arg id "$POLICY_ID" '.list[]?|select(.policy_id==$id)|.api_key' | head -n1)"
