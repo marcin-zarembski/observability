@@ -9,8 +9,8 @@ print_help() {
 Usage:
   30_fleet_prereq.sh \
     --es-url <https://es:9200> --es-user <user> --es-pass <pass> \
-    --kibana-url <https://kib:5601> \
-    --policy-name <name> \
+    [--kibana-url <https://kib:5601>] \
+    [--policy-name <name>] \
     [--kbn-user <user>] [--kbn-pass <pass>] \
     [--ca <path>] [--out-dir <dir>] [--ssh-user <user>]
 
@@ -23,12 +23,12 @@ What it does:
 
 Notes:
   - If --kbn-user/--kbn-pass are not provided, the script will use --es-user/--es-pass for Kibana API calls.
+  - If --policy-name is not provided, it defaults to "observability-default".
+  - If --kibana-url is not provided, it defaults to the same host as --es-url but with port 5601.
 
 Examples:
   ./30_fleet_prereq.sh \
     --es-url https://es:9200 --es-user elastic --es-pass '***' \
-    --kibana-url https://kib:5601 \
-    --policy-name Observability-Default \
     --ca cfg/tls/ca.crt --out-dir ./secrets
 EOF
   exit 0
@@ -39,7 +39,7 @@ require_cmd curl jq
 
 ES_URL="" ES_USER="" ES_PASS=""
 KBN_URL="" KBN_USER="" KBN_PASS=""
-CA_FILE="" OUT_DIR="./secrets" POLICY_NAME=""
+CA_FILE="" OUT_DIR="./secrets" POLICY_NAME="observability-default"
 
 ARGS=("$@")
 # Pre-parse --ssh-user (kept for consistency with other scripts)
@@ -71,8 +71,13 @@ done
 
 # Validate required args
 [[ -n "$ES_URL" && -n "$ES_USER" && -n "$ES_PASS" ]] || die "Missing ES connection args (--es-url/--es-user/--es-pass)"
-[[ -n "$KBN_URL" ]] || die "Missing --kibana-url"
-[[ -n "$POLICY_NAME" ]] || die "Missing required --policy-name"
+
+# If Kibana URL is empty, build it from ES host
+if [[ -z "$KBN_URL" ]]; then
+  HOST_PART="$(echo "$ES_URL" | sed -E 's#https?://([^:/]+).*#\1#')"
+  SCHEME="$(echo "$ES_URL" | grep -oE '^https?')"
+  KBN_URL="$SCHEME://$HOST_PART:5601"
+fi
 
 LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_30_fleet_prereq.log"
 mkdir -p "$OUT_DIR"
@@ -124,8 +129,8 @@ if [[ -n "$CA_FILE" ]]; then
 else
   RESP_RAW="$(curl -sS -w '\n%{http_code}' -k -X POST -u "$ES_USER:$ES_PASS" "$CREATE_URL" || true)"
 fi
-RESP_BODY="$(echo "$RESP_RAW" | sed -n '1,$-1p')"
-RESP_CODE="$(echo "$RESP_RAW" | tail -n1)"
+RESP_CODE="$(printf '%s\n' "$RESP_RAW" | tail -n1)"
+RESP_BODY="$(printf '%s\n' "$RESP_RAW" | sed '$d')"
 
 TOKEN_VAL=""
 if [[ "$RESP_CODE" == "201" ]]; then
