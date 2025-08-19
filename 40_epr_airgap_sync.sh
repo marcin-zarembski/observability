@@ -38,7 +38,7 @@ What it does:
       * injects Environment=NODE_EXTRA_CA_CERTS into main kibana.service unit
       * sets in /etc/kibana/kibana.yml:
           xpack.fleet.isAirGapped: true
-          xpack.fleet.registryUrl: "https://localhost:<port>"
+          xpack.fleet.registryUrl: "https://<this-host>:<port>"
       * restarts Kibana (systemd)
 
 Notes:
@@ -151,7 +151,7 @@ if [[ -n "$FROM_ES_JKS" ]]; then
     openssl pkcs12 -in '$ES_DIR/epr.p12' -passin pass:'$KS_PASS' -clcerts -nokeys -out '$ES_DIR/epr.crt'; \
     : > '$ES_DIR/epr-ca-chain.pem'; \
     for a in $(keytool -list -keystore '$TRUSTSTORE_PATH' -storepass '$TS_PASS' 2>/dev/null | awk -F': ' '/Alias name/ {print $2}'); do \
-      keytool -exportcert -rfc -alias "$a" -keystore '$TRUSTSTORE_PATH' -storepass '$TS_PASS' >> '$ES_DIR/epr-ca-chain.pem'; \
+      keytool -exportcert -rfc -alias \"$a\" -keystore '$TRUSTSTORE_PATH' -storepass '$TS_PASS' >> '$ES_DIR/epr-ca-chain.pem'; \
     done; \
     chmod 600 '$ES_DIR/epr.key'; \
     chmod 644 '$ES_DIR/epr.crt' '$ES_DIR/epr-ca-chain.pem' || true"
@@ -202,14 +202,33 @@ $RUNCMD load -i "$EPR_TAR"
 IMG_NAME="$($RUNCMD images --format '{{.Repository}}:{{.Tag}}' | grep -E 'package-registry' | head -n1)"
 [[ -n "$IMG_NAME" ]] || IMG_NAME="docker.elastic.co/package-registry/distribution:latest"
 
+# 2b) Prepare TLS materials for EPR (copy to Kibana dir so both EPR and Kibana use the same files)
+KBN_CERT_DIR="/etc/kibana/fleet/certs"
+sudo mkdir -p "$KBN_CERT_DIR"
+sudo cp "$EPR_CA"  "$KBN_CERT_DIR/epr-ca-chain.pem"
+sudo cp "$EPR_CERT" "$KBN_CERT_DIR/epr.crt"
+sudo cp "$EPR_KEY"  "$KBN_CERT_DIR/epr.key"
+
+sudo bash -lc '
+  set -e
+  SVC_USER=$(systemctl show kibana -p User --value 2>/dev/null || true)
+  SVC_GROUP=$(systemctl show kibana -p Group --value 2>/dev/null || true)
+  [[ -n "$SVC_USER" ]] || SVC_USER="kibana"
+  [[ -n "$SVC_GROUP" ]] || SVC_GROUP="kibana"
+  chown -R "$SVC_USER:$SVC_GROUP" /etc/kibana/fleet/certs
+  chmod 0750 /etc/kibana/fleet/certs
+  chmod 0644 /etc/kibana/fleet/certs/epr-ca-chain.pem /etc/kibana/fleet/certs/epr.crt
+  chmod 0600 /etc/kibana/fleet/certs/epr.key
+'
+
 # 3) (Re)start EPR container securely
 log "[local] (Re)starting secure EPR container '$EPR_NAME' on HTTPS port $EPR_PORT (image: $IMG_NAME)"
 $RUNCMD rm -f "$EPR_NAME" >/dev/null 2>&1 || true
 $RUNCMD run -d --name "$EPR_NAME" --restart unless-stopped \
   -p "$EPR_PORT:8080" \
-  -v "$EPR_CERT:/usr/share/package-registry/config/cert.pem:ro" \
-  -v "$EPR_KEY:/usr/share/package-registry/config/key.pem:ro" \
-  -v "$EPR_CA:/usr/share/package-registry/config/ca.pem:ro" \
+  -v "$KBN_CERT_DIR/epr.crt:/usr/share/package-registry/config/cert.pem:ro" \
+  -v "$KBN_CERT_DIR/epr.key:/usr/share/package-registry/config/key.pem:ro" \
+  -v "$KBN_CERT_DIR/epr-ca-chain.pem:/usr/share/package-registry/config/ca.pem:ro" \
   "$IMG_NAME" \
   --tls-cert /usr/share/package-registry/config/cert.pem \
   --tls-key  /usr/share/package-registry/config/key.pem
@@ -225,26 +244,10 @@ else
 fi
 
 # 5) Configure LOCAL Kibana
-KBN_CERT_DIR="/etc/kibana/fleet/certs"
 log "[local] Installing EPR TLS materials for Kibana in $KBN_CERT_DIR and configuring registryUrl: $EPR_URL"
-
-sudo mkdir -p "$KBN_CERT_DIR"
-sudo cp "$EPR_CA"  "$KBN_CERT_DIR/epr-ca-chain.pem"
-sudo cp "$EPR_CERT" "$KBN_CERT_DIR/epr.crt"
-sudo cp "$EPR_KEY"  "$KBN_CERT_DIR/epr.key"
 
 sudo bash -lc '
   set -e
-  SVC_USER=$(systemctl show kibana -p User --value 2>/dev/null || true)
-  SVC_GROUP=$(systemctl show kibana -p Group --value 2>/dev/null || true)
-  [[ -n "$SVC_USER" ]] || SVC_USER="kibana"
-  [[ -n "$SVC_GROUP" ]] || SVC_GROUP="kibana"
-
-  chown -R "$SVC_USER:$SVC_GROUP" /etc/kibana/fleet/certs
-  chmod 0750 /etc/kibana/fleet/certs
-  chmod 0644 /etc/kibana/fleet/certs/epr-ca-chain.pem /etc/kibana/fleet/certs/epr.crt
-  chmod 0600 /etc/kibana/fleet/certs/epr.key
-
   UNIT_FILE=/usr/lib/systemd/system/kibana.service
   if [[ ! -f "$UNIT_FILE" ]]; then UNIT_FILE=/etc/systemd/system/kibana.service; fi
   if [[ -f "$UNIT_FILE" ]]; then
