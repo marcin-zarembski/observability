@@ -125,8 +125,8 @@ LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_40_epr_deploy.log"
 if [[ -n "$FROM_ES_JKS" ]]; then
   log "[local] Reading $ES_CONF_PATH to locate keystore/truststore paths"
   # Extract paths from elasticsearch.yml without external YAML tools
-  KEYSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.keystore.path/ {sub(/^[ \t]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"\t]//g' | head -n1)"
-  TRUSTSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.truststore.path/ {sub(/^[ \t]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"\t]//g' | head -n1)"
+  KEYSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.keystore.path/ {sub(/^[ 	]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"	]//g' | head -n1)"
+  TRUSTSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.truststore.path/ {sub(/^[ 	]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"	]//g' | head -n1)"
   [[ -n "$KEYSTORE_PATH" ]] || die "Could not parse xpack.security.http.ssl.keystore.path from $ES_CONF_PATH"
   [[ -n "$TRUSTSTORE_PATH" ]] || die "Could not parse xpack.security.http.ssl.truststore.path from $ES_CONF_PATH"
 
