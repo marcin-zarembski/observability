@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# 40_epr_deploy.sh — Local secure Elastic Package Registry (EPR) deploy
-# Runs on a single (local) host. No SSH. Works with either PEM inputs or
-# converts local Elasticsearch JKS -> PEM and uses those.
-# Requires: bash, curl, jq, sed, awk, grep, and either docker or podman.
+# 40_epr_deploy.sh — Local secure Elastic Package Registry (EPR) deploy with Podman
+# - Single local host (no SSH)
+# - Podman-only, rootful, with custom storage under /app/containers by default
+# - Uses either PEM inputs or converts local Elasticsearch JKS -> PEM
+# - Configures local Kibana to trust and use the secure EPR
 
 # Guard against running with sh
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -25,12 +26,13 @@ Usage:
     [--port <8443>] [--name <epr>] [--podman-storage-dir /app/containers]
 
 What it does:
-  - Local-only secure EPR deploy (HTTPS) using docker or podman.
-  - Health-checks EPR via HTTPS using the provided CA chain.
+  - Local-only secure EPR deploy (HTTPS) using **Podman (rootful)**.
+  - Sets up custom Podman storage under --podman-storage-dir (default: /app/containers):
+      /app/containers/{storage,runroot,tmp} with proper perms and SELinux labels.
+  - Loads the EPR image from --epr-tar, starts the container with TLS cert/key, and health-checks over HTTPS.
   - Optional JKS auto-conversion (reuses local Elasticsearch JKS materials):
       * reads keystore/truststore paths from local elasticsearch.yml
-      * converts JKS -> PEM (epr.key, epr.crt fullchain, epr-ca-chain.pem) next to the JKS
-      * uses those PEMs directly (no tmp copies)
+      * converts JKS -> PEM (epr.key, epr.crt, epr-ca-chain.pem) next to the JKS
   - Configures local Kibana to trust and use the secure EPR:
       * copies CA, cert, key to /etc/kibana/fleet/certs
       * injects Environment=NODE_EXTRA_CA_CERTS into main kibana.service unit
@@ -40,10 +42,8 @@ What it does:
       * restarts Kibana (systemd)
 
 Notes:
-  - Requires docker or podman installed locally.
-  - For JKS flow, keytool & openssl must be present locally.
-  - With Podman, the script can use a custom rootful storage directory (default: /app/containers).
-  - Key will be installed for Kibana with 0600 permissions (owned by Kibana service user).
+  - Requires: podman, curl, jq, sed, awk, grep; and for JKS flow: keytool & openssl.
+  - Key copied to Kibana dir will be mode 0600 owned by the Kibana service user.
 
 Examples:
   # Using PEM files
@@ -61,20 +61,20 @@ Examples:
     --ks-pass 'KeystorePass' --ts-pass 'TruststorePass' \
     --port 8443
 
-  # Using Podman with custom storage root (rootful) under /data/containers
+  # Podman with custom storage root
   ./40_epr_deploy.sh \
     --epr-tar ./artifacts/package-registry-8.18.3.tar \
     --epr-cert /etc/elasticsearch/ssl/http_fullchain.crt \
     --epr-key  /etc/elasticsearch/ssl/http.key \
     --epr-ca   /etc/elasticsearch/ssl/ca-chain.pem \
-    --podman-storage-dir /data/containers \
+    --podman-storage-dir /app/containers \
     --port 8443
 EOF
   exit 0
 }
 
 [[ $# -eq 0 ]] && print_help
-require_cmd curl jq sed awk grep
+require_cmd podman curl jq sed awk grep
 
 # Args
 EPR_TAR="" EPR_CERT="" EPR_KEY="" EPR_CA=""
@@ -104,7 +104,6 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --help|-h) print_help;;
     *) ((i+=1));;
   esac
-
 done
 
 # Validate inputs (either PEM or JKS)
@@ -126,8 +125,8 @@ LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_40_epr_deploy.log"
 if [[ -n "$FROM_ES_JKS" ]]; then
   log "[local] Reading $ES_CONF_PATH to locate keystore/truststore paths"
   # Extract paths from elasticsearch.yml without external YAML tools
-  KEYSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.keystore.path/ {sub(/^[ 	]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"	]//g' | head -n1)"
-  TRUSTSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.truststore.path/ {sub(/^[ 	]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"	]//g' | head -n1)"
+  KEYSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.keystore.path/ {sub(/^[ \t]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"\t]//g' | head -n1)"
+  TRUSTSTORE_PATH="$(sudo awk -F: '/xpack.security.http.ssl.truststore.path/ {sub(/^[ \t]+/,""); sub(/#[^$]*/,""); print $2}' "$ES_CONF_PATH" | sed 's/[ \"\t]//g' | head -n1)"
   [[ -n "$KEYSTORE_PATH" ]] || die "Could not parse xpack.security.http.ssl.keystore.path from $ES_CONF_PATH"
   [[ -n "$TRUSTSTORE_PATH" ]] || die "Could not parse xpack.security.http.ssl.truststore.path from $ES_CONF_PATH"
 
@@ -159,8 +158,10 @@ if [[ -n "$FROM_ES_JKS" ]]; then
 
   # Basic validation
   sudo grep -q "BEGIN PRIVATE KEY" "$ES_DIR/epr.key"      || die "Extracted key looks invalid: $ES_DIR/epr.key"
-  sudo grep -q "BEGIN CERTIFICATE" "$ES_DIR/epr.crt"      || warn "Extracted cert appears empty — your keystore may not contain the leaf cert. You can still start EPR if you provide a valid cert via --epr-cert later."
-  sudo test -s "$ES_DIR/epr-ca-chain.pem"                  || warn "Extracted CA chain is empty."
+  if ! sudo grep -q "BEGIN CERTIFICATE" "$ES_DIR/epr.crt"; then
+    warn "Extracted cert appears empty — your keystore may not contain the leaf cert. Provide a valid server certificate via --epr-cert if EPR fails to start."
+  fi
+  sudo test -s "$ES_DIR/epr-ca-chain.pem" || warn "Extracted CA chain is empty."
 
   # Use PEMs in original JKS directory
   EPR_KEY="$ES_DIR/epr.key"
@@ -168,39 +169,37 @@ if [[ -n "$FROM_ES_JKS" ]]; then
   EPR_CA="$ES_DIR/epr-ca-chain.pem"
 fi
 
-# 1) Detect container runtime
-log "[local] Detecting container runtime"
-if command -v docker >/dev/null 2>&1; then RUNTIME=docker; elif command -v podman >/dev/null 2>&1; then RUNTIME=podman; else die "Neither docker nor podman found"; fi
-# Use rootful podman with custom storage to avoid rootless quota and small /var
-RUNCMD="$RUNTIME"
-if [[ "$RUNTIME" == "podman" ]]; then
-  log "[local] Configuring rootful Podman storage under $PODMAN_STORAGE_DIR"
-  sudo mkdir -p "$PODMAN_STORAGE_DIR"/storage "$PODMAN_STORAGE_DIR"/runroot
-  sudo chown -R root:root "$PODMAN_STORAGE_DIR"
-  sudo chmod 0755 "$PODMAN_STORAGE_DIR" "$PODMAN_STORAGE_DIR"/storage "$PODMAN_STORAGE_DIR"/runroot
-  # SELinux context (RHEL): label as container storage if SELinux is enforcing
-  if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
-    if command -v semanage >/dev/null 2>&1; then
-      sudo semanage fcontext -a -t container_file_t "$PODMAN_STORAGE_DIR(/.*)?" || true
-    fi
-    sudo restorecon -R "$PODMAN_STORAGE_DIR" || true
+# 1) Configure Podman storage (rootful) and TMPDIR
+log "[local] Configuring rootful Podman storage under $PODMAN_STORAGE_DIR"
+sudo mkdir -p "$PODMAN_STORAGE_DIR"/storage "$PODMAN_STORAGE_DIR"/runroot "$PODMAN_STORAGE_DIR"/tmp
+sudo chown -R root:root "$PODMAN_STORAGE_DIR"
+sudo chmod 0755 "$PODMAN_STORAGE_DIR" "$PODMAN_STORAGE_DIR"/storage "$PODMAN_STORAGE_DIR"/runroot
+sudo chmod 1777 "$PODMAN_STORAGE_DIR"/tmp
+
+# SELinux labeling (if enforcing)
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+  if command -v semanage >/dev/null 2>&1; then
+    sudo semanage fcontext -a -t container_file_t "$PODMAN_STORAGE_DIR(/.*)?" || true
   fi
-  STORAGE_CONF="/etc/containers/storage-epr.conf"
-  sudo bash -lc "cat > '$STORAGE_CONF' <<CONF
+  sudo restorecon -R "$PODMAN_STORAGE_DIR" || true
+fi
+
+STORAGE_CONF="/etc/containers/storage-epr.conf"
+sudo bash -lc "cat > '$STORAGE_CONF' <<CONF
 [storage]
 driver = 'overlay'
 runroot = '$PODMAN_STORAGE_DIR/runroot'
 graphroot = '$PODMAN_STORAGE_DIR/storage'
 CONF"
-  RUNCMD="sudo env CONTAINERS_STORAGE_CONF=$STORAGE_CONF podman"
-fi
 
-# 2) Load image
+RUNCMD="sudo env CONTAINERS_STORAGE_CONF=$STORAGE_CONF TMPDIR=$PODMAN_STORAGE_DIR/tmp podman"
+
+# 2) Load image (no timeout, show output)
 log "[local] Loading EPR image: $EPR_TAR"
-$RUNCMD load -i "$EPR_TAR" >/dev/null 2>&1 || true
+$RUNCMD load -i "$EPR_TAR"
 
 # Determine image name (best-effort)
-IMG_NAME="$( $RUNCMD images --format '{{.Repository}}:{{.Tag}}' | grep -E 'package-registry' | head -n1 )"
+IMG_NAME="$($RUNCMD images --format '{{.Repository}}:{{.Tag}}' | grep -E 'package-registry' | head -n1)"
 [[ -n "$IMG_NAME" ]] || IMG_NAME="docker.elastic.co/package-registry/distribution:latest"
 
 # 3) (Re)start EPR container securely
@@ -219,7 +218,7 @@ $RUNCMD run -d --name "$EPR_NAME" --restart unless-stopped \
 EPR_URL="https://localhost:$EPR_PORT"
 log "[local] Waiting for $EPR_URL/health (24x5s, TLS verify with provided CA)"
 if ! retry 24 5 bash -lc "curl -fsS --cacert '$EPR_CA' '$EPR_URL/health' >/dev/null"; then
-  warn "[local] EPR health check failed at $EPR_URL/health (with --cacert)"
+  warn "[local] EPR health check failed at $EPR_URL/health (with --cacert). Proceeding to configure Kibana anyway."
 else
   log "[local] EPR is healthy (HTTPS)"
 fi
@@ -267,9 +266,9 @@ sudo bash -lc '
     echo "xpack.fleet.isAirGapped: true" >> "$Y"
   fi
   if grep -q "^xpack.fleet.registryUrl:" "$Y" 2>/dev/null; then
-    sed -i "s|^xpack.fleet.registryUrl:.*|xpack.fleet.registryUrl: '$EPR_URL'|" "$Y"
+    sed -i "s|^xpack.fleet.registryUrl:.*|xpack.fleet.registryUrl: '"$EPR_URL"'|" "$Y"
   else
-    echo "xpack.fleet.registryUrl: '$EPR_URL'" >> "$Y"
+    echo "xpack.fleet.registryUrl: '"$EPR_URL"'" >> "$Y"
   fi
   chmod 0644 "$Y"
   systemctl restart kibana
