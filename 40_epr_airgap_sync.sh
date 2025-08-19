@@ -215,7 +215,8 @@ $RUNCMD run -d --name "$EPR_NAME" --restart unless-stopped \
   --tls-key  /usr/share/package-registry/config/key.pem
 
 # 4) Health check via HTTPS using provided CA
-EPR_URL="https://localhost:$EPR_PORT"
+SERVER_HOST="$(hostname -f 2>/dev/null || hostname)"
+EPR_URL="https://$SERVER_HOST:$EPR_PORT"
 log "[local] Waiting for $EPR_URL/health (24x5s, TLS verify with provided CA)"
 if ! retry 24 5 bash -lc "curl -fsS --cacert '$EPR_CA' '$EPR_URL/health' >/dev/null"; then
   warn "[local] EPR health check failed at $EPR_URL/health (with --cacert). Proceeding to configure Kibana anyway."
