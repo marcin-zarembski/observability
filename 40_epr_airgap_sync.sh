@@ -22,7 +22,7 @@ Usage:
     --epr-tar <image.tar> \
     ( --epr-cert </path/server.crt> --epr-key </path/server.key> --epr-ca </path/ca-chain.pem>
       | --from-es-jks [--es-config /etc/elasticsearch/elasticsearch.yml] --ks-pass <ks_password> --ts-pass <ts_password> [--src-alias <alias>] ) \
-    [--port <8443>] [--name <epr>]
+    [--port <8443>] [--name <epr>] [--podman-storage-dir /app/containers]
 
 What it does:
   - Local-only secure EPR deploy (HTTPS) using docker or podman.
@@ -42,6 +42,7 @@ What it does:
 Notes:
   - Requires docker or podman installed locally.
   - For JKS flow, keytool & openssl must be present locally.
+  - With Podman, the script can use a custom rootful storage directory (default: /app/containers).
   - Key will be installed for Kibana with 0600 permissions (owned by Kibana service user).
 
 Examples:
@@ -59,6 +60,15 @@ Examples:
     --from-es-jks --es-config /etc/elasticsearch/elasticsearch.yml \
     --ks-pass 'KeystorePass' --ts-pass 'TruststorePass' \
     --port 8443
+
+  # Using Podman with custom storage root (rootful) under /data/containers
+  ./40_epr_deploy.sh \
+    --epr-tar ./artifacts/package-registry-8.18.3.tar \
+    --epr-cert /etc/elasticsearch/ssl/http_fullchain.crt \
+    --epr-key  /etc/elasticsearch/ssl/http.key \
+    --epr-ca   /etc/elasticsearch/ssl/ca-chain.pem \
+    --podman-storage-dir /data/containers \
+    --port 8443
 EOF
   exit 0
 }
@@ -71,6 +81,8 @@ EPR_TAR="" EPR_CERT="" EPR_KEY="" EPR_CA=""
 EPR_NAME="epr" EPR_PORT="8443"
 # JKS auto-conversion (local)
 FROM_ES_JKS="" ES_CONF_PATH="/etc/elasticsearch/elasticsearch.yml" KS_PASS="" TS_PASS="" SRC_ALIAS=""
+# Podman rootful custom storage
+PODMAN_STORAGE_DIR="/app/containers"
 
 ARGS=("$@")
 
@@ -88,9 +100,11 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --ks-pass)  KS_PASS="${ARGS[i+1]}"; ((i+=2));;
     --ts-pass)  TS_PASS="${ARGS[i+1]}"; ((i+=2));;
     --src-alias) SRC_ALIAS="${ARGS[i+1]}"; ((i+=2));;
+    --podman-storage-dir) PODMAN_STORAGE_DIR="${ARGS[i+1]}"; ((i+=2));;
     --help|-h) print_help;;
     *) ((i+=1));;
   esac
+
 done
 
 # Validate inputs (either PEM or JKS)
@@ -157,19 +171,42 @@ fi
 # 1) Detect container runtime
 log "[local] Detecting container runtime"
 if command -v docker >/dev/null 2>&1; then RUNTIME=docker; elif command -v podman >/dev/null 2>&1; then RUNTIME=podman; else die "Neither docker nor podman found"; fi
+# Use rootful podman with custom storage to avoid rootless quota and small /var
+RUNCMD="$RUNTIME"
+if [[ "$RUNTIME" == "podman" ]]; then
+  log "[local] Configuring rootful Podman storage under $PODMAN_STORAGE_DIR"
+  sudo mkdir -p "$PODMAN_STORAGE_DIR"/storage "$PODMAN_STORAGE_DIR"/runroot
+  sudo chown -R root:root "$PODMAN_STORAGE_DIR"
+  sudo chmod 0755 "$PODMAN_STORAGE_DIR" "$PODMAN_STORAGE_DIR"/storage "$PODMAN_STORAGE_DIR"/runroot
+  # SELinux context (RHEL): label as container storage if SELinux is enforcing
+  if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    if command -v semanage >/dev/null 2>&1; then
+      sudo semanage fcontext -a -t container_file_t "$PODMAN_STORAGE_DIR(/.*)?" || true
+    fi
+    sudo restorecon -R "$PODMAN_STORAGE_DIR" || true
+  fi
+  STORAGE_CONF="/etc/containers/storage-epr.conf"
+  sudo bash -lc "cat > '$STORAGE_CONF' <<CONF
+[storage]
+driver = 'overlay'
+runroot = '$PODMAN_STORAGE_DIR/runroot'
+graphroot = '$PODMAN_STORAGE_DIR/storage'
+CONF"
+  RUNCMD="sudo env CONTAINERS_STORAGE_CONF=$STORAGE_CONF podman"
+fi
 
 # 2) Load image
 log "[local] Loading EPR image: $EPR_TAR"
-$RUNTIME load -i "$EPR_TAR" >/dev/null 2>&1 || true
+$RUNCMD load -i "$EPR_TAR" >/dev/null 2>&1 || true
 
 # Determine image name (best-effort)
-IMG_NAME="$($RUNTIME images --format '{{.Repository}}:{{.Tag}}' | grep -E 'package-registry' | head -n1)"
+IMG_NAME="$( $RUNCMD images --format '{{.Repository}}:{{.Tag}}' | grep -E 'package-registry' | head -n1 )"
 [[ -n "$IMG_NAME" ]] || IMG_NAME="docker.elastic.co/package-registry/distribution:latest"
 
 # 3) (Re)start EPR container securely
 log "[local] (Re)starting secure EPR container '$EPR_NAME' on HTTPS port $EPR_PORT (image: $IMG_NAME)"
-$RUNTIME rm -f "$EPR_NAME" >/dev/null 2>&1 || true
-$RUNTIME run -d --name "$EPR_NAME" --restart unless-stopped \
+$RUNCMD rm -f "$EPR_NAME" >/dev/null 2>&1 || true
+$RUNCMD run -d --name "$EPR_NAME" --restart unless-stopped \
   -p "$EPR_PORT:8080" \
   -v "$EPR_CERT:/usr/share/package-registry/config/cert.pem:ro" \
   -v "$EPR_KEY:/usr/share/package-registry/config/key.pem:ro" \
