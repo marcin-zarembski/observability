@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 31_fleet_server_install.sh — Install local Fleet Server from tar.gz (no SSH)
-# - Runs entirely on the local machine
+# - Runs on the local machine
 # - Uses Elastic Agent tar.gz installer
 # - Ensures a Fleet policy with Fleet Server integration exists (via Kibana API)
-# - Enrolls the agent with that policy
+# - Supports TLS via PEM (CA+cert+key) or P12 (converted locally)
+# - Supports custom tags via repeated --tag
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,35 +24,28 @@ Usage:
     --kbn-url <https://kibana:5601> --kbn-user <user> --kbn-pass <pass> \
     [--kbn-ca <kibana-ca.pem> | --kbn-insecure] \
     [--policy-name "Fleet Server Policy"] \
-    [--data-dir </var/lib/elastic-agent>] [--workdir </tmp>] [--keep-workdir]
+    [--data-dir </var/lib/elastic-agent>] [--workdir </tmp>] [--keep-workdir] \
+    [--tag <tag>]...
 
 What it does:
-  - Extracts Elastic Agent tar.gz locally and installs Fleet Server (no rpm, no ssh).
+  - Extracts Elastic Agent tar.gz and installs Fleet Server locally (no rpm, no ssh).
   - Ensures a Fleet policy exists in Kibana and has the Fleet Server integration (creates if missing).
   - Uses either PEM cert+key (+CA) or converts P12 -> PEM locally.
+  - Supports custom tags for the agent (--tag can be used multiple times).
   - Waits for agent to become healthy; prints diagnostics on failure.
 
-Examples:
-  PEM:
-    ./31_fleet_server_install.sh \
-      --agent-tar ./artifacts/elastic-agent-8.18.3-linux-x86_64.tar.gz \
-      --es-url https://es01:9200 \
-      --fleet-url https://$(hostname -f):8220 \
-      --service-token-file ./secrets/fleet_server_service_token \
-      --ca /etc/kibana/fleet/certs/ca.pem \
-      --cert /etc/kibana/fleet/certs/cert.pem \
-      --key  /etc/kibana/fleet/certs/key.pem \
-      --kbn-url https://$(hostname -f):5601 --kbn-user elastic --kbn-pass '***' --kbn-insecure
-
-  P12:
-    ./31_fleet_server_install.sh \
-      --agent-tar ./artifacts/elastic-agent-8.18.3-linux-x86_64.tar.gz \
-      --es-url https://es01:9200 \
-      --fleet-url https://$(hostname -f):8220 \
-      --service-token-file ./secrets/fleet_server_service_token \
-      --ca /etc/kibana/fleet/certs/ca.pem \
-      --p12 ./cfg/tls/fleet.p12 --p12-pass 'secret' \
-      --kbn-url https://$(hostname -f):5601 --kbn-user elastic --kbn-pass '***' --kbn-insecure
+Example:
+  ./31_fleet_server_install.sh \
+    --agent-tar ./artifacts/elastic-agent-8.18.3-linux-x86_64.tar.gz \
+    --es-url https://es01:9200 \
+    --fleet-url https://$(hostname -f):8220 \
+    --service-token-file ./secrets/fleet_server_service_token \
+    --ca /etc/kibana/fleet/certs/ca.pem \
+    --cert /etc/kibana/fleet/certs/cert.pem \
+    --key  /etc/kibana/fleet/certs/key.pem \
+    --kbn-url https://$(hostname -f):5601 --kbn-user elastic --kbn-pass '***' --kbn-insecure \
+    --policy-name "Fleet Server Policy" \
+    --tag prod --tag mars
 EOF
   exit 0
 }
@@ -63,11 +57,13 @@ require_cmd tar curl jq
 AGENT_TAR="" ES_URL="" FLEET_URL="" SERVICE_TOKEN_FILE=""
 CA_FILE="" INSECURE=0 DATA_DIR="/var/lib/elastic-agent" WORKDIR="/tmp"
 CERT="" KEY="" P12="" P12_PASS="" KEEP_WORKDIR=0
-
 # Kibana / policy
 KBN_URL="" KBN_USER="" KBN_PASS="" KBN_CA="" KBN_INSECURE=0
 POLICY_NAME="Fleet Server Policy"
+# Tags
+TAGS=()
 
+# Parse
 ARGS=("$@")
 i=0
 while [[ $i -lt ${#ARGS[@]} ]]; do
@@ -91,6 +87,7 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --kbn-ca)   KBN_CA="${ARGS[i+1]}"; ((i+=2));;
     --kbn-insecure) KBN_INSECURE=1; ((i+=1));;
     --policy-name) POLICY_NAME="${ARGS[i+1]}"; ((i+=2));;
+    --tag) TAGS+=("${ARGS[i+1]}"); ((i+=2));;
     --help|-h) print_help;;
     *) ((i+=1));;
   esac
@@ -149,41 +146,44 @@ KBN_CURL_OPTS=(-sS -u "$KBN_USER:$KBN_PASS" -H 'kbn-xsrf: true' -H 'Content-Type
 [[ -n "$KBN_CA" ]] && KBN_CURL_OPTS+=(--cacert "$KBN_CA")
 
 # Find policy by name
-POLICY_JSON="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies")"
-POLICY_ID="$(echo "$POLICY_JSON" | jq -r --arg n "$POLICY_NAME" '.items[] | select(.name==$n) | .id' || true)"
+POLICIES_JSON="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies")" || die "Failed to list agent policies"
+POLICY_ID="$(jq -r --arg n "$POLICY_NAME" '.items[]? | select(.name==$n) | .id' <<<"$POLICIES_JSON" | head -n1 || true)"
 
-if [[ -z "$POLICY_ID" || "$POLICY_ID" == "null" ]]; then
+if [[ -z "${POLICY_ID:-}" || "$POLICY_ID" == "null" ]]; then
   log "[local] Creating policy '$POLICY_NAME'"
-  CREATE_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/agent_policies" \
-    -d "{\"name\":\"$POLICY_NAME\",\"namespace\":\"default\",\"description\":\"Auto-created by installer\",\"monitoring_enabled\":[\"logs\",\"metrics\"],\"is_default_fleet_server\":true}")"
-  POLICY_ID="$(echo "$CREATE_RESP" | jq -r '.item.id')"
-  [[ -n "$POLICY_ID" && "$POLICY_ID" != "null" ]] || die "Failed to create Fleet policy"
+  read -r -d '' CREATE_POLICY_BODY <<JSON
+{"name":"$POLICY_NAME","namespace":"default","description":"Auto-created by installer","monitoring_enabled":["logs","metrics"],"is_default_fleet_server":true}
+JSON
+  CREATE_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/agent_policies" -d "$CREATE_POLICY_BODY")" || die "Create policy failed"
+  POLICY_ID="$(jq -r '.item.id // empty' <<<"$CREATE_RESP")"
+  [[ -n "$POLICY_ID" ]] || die "Failed to parse created policy id: $CREATE_RESP"
 else
   log "[local] Using existing policy '$POLICY_NAME' (id=$POLICY_ID)"
 fi
 
-# Ensure fleet_server package is installed (optional but safer)
-PKG_INFO="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/epm/packages/fleet_server")"
-PKG_VER="$(echo "$PKG_INFO" | jq -r '.item.version // .version // empty')"
+# Ensure fleet_server package installed (best-effort)
+PKG_INFO="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/epm/packages/fleet_server" || true)"
+PKG_VER="$(jq -r '.item.version // .version // empty' <<<"$PKG_INFO" || true)"
 if [[ -n "$PKG_VER" ]]; then
   log "[local] Ensuring package fleet_server@$PKG_VER is installed"
   curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/epm/packages/fleet_server/$PKG_VER" -d '{"force":true}' >/dev/null || true
 fi
 
 # Check if policy already has Fleet Server integration
-HAS_FS="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies/$POLICY_ID" \
-  | jq -r '.item.package_policies[]? | select(.package.name==\"fleet_server\") | .id' | head -n1 || true)"
+POLICY_DETAIL_JSON="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies/$POLICY_ID")" || die "Failed to read policy details"
+HAS_FS_ID="$(jq -r '[.item.package_policies[]? | select(.package.name=="fleet_server") | .id][0] // ""' <<<"$POLICY_DETAIL_JSON")"
 
-if [[ -z "$HAS_FS" ]]; then
+if [[ -z "$HAS_FS_ID" ]]; then
   log "[local] Adding Fleet Server integration to policy '$POLICY_NAME'"
-  # Package policy name unique-ish
   FS_PP_NAME="fleet-server-$(hostname -s)-$TS"
-  ADD_PP_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/package_policies" \
-    -d "{\"name\":\"$FS_PP_NAME\",\"namespace\":\"default\",\"policy_id\":\"$POLICY_ID\",\"package\":{\"name\":\"fleet_server\"}}")"
-  PP_ID="$(echo "$ADD_PP_RESP" | jq -r '.item.id')"
-  [[ -n "$PP_ID" && "$PP_ID" != "null" ]] || die "Failed to add Fleet Server integration to policy"
+  read -r -d '' ADD_PP_BODY <<JSON
+{"name":"$FS_PP_NAME","namespace":"default","policy_id":"$POLICY_ID","package":{"name":"fleet_server"}}
+JSON
+  ADD_PP_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/package_policies" -d "$ADD_PP_BODY")" || die "Add package policy failed"
+  PP_ID="$(jq -r '.item.id // empty' <<<"$ADD_PP_RESP")"
+  [[ -n "$PP_ID" ]] || die "Failed to add Fleet Server integration: $ADD_PP_RESP"
 else
-  log "[local] Policy already contains Fleet Server integration (package policy id=$HAS_FS)"
+  log "[local] Policy already contains Fleet Server integration (package policy id=$HAS_FS_ID)"
 fi
 
 # Clean previous install (idempotent)
@@ -198,9 +198,13 @@ TLS_ARGS=()
 if [[ -n "$TLS_CERT_LOCAL" && -n "$TLS_KEY_LOCAL" ]]; then
   TLS_ARGS=(--fleet-server-cert "$TLS_CERT_LOCAL" --fleet-server-cert-key "$TLS_KEY_LOCAL")
 fi
+TAG_ARGS=()
+for t in "${TAGS[@]}"; do
+  TAG_ARGS+=(--tag "$t")
+done
 
 # Enroll as Fleet Server with explicit policy
-log "[local] Installing Fleet Server from tar.gz with policy '$POLICY_NAME' ($POLICY_ID)"
+log "[local] Installing Fleet Server from tar.gz (policy '$POLICY_NAME', id=$POLICY_ID)"
 sudo bash -lc "cd '$EA_DIR_LOCAL' && ./elastic-agent install \
   --url='$FLEET_URL' \
   --fleet-server-es='$ES_URL' \
@@ -208,6 +212,7 @@ sudo bash -lc "cd '$EA_DIR_LOCAL' && ./elastic-agent install \
   --fleet-server-policy='$POLICY_ID' \
   ${CA_ARG[*]} \
   ${TLS_ARGS[*]} \
+  ${TAG_ARGS[*]} \
   --non-interactive"
 
 # Wait for readiness
