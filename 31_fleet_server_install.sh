@@ -170,16 +170,22 @@ if [[ -n "$PKG_VER" ]]; then
   curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/epm/packages/fleet_server/$PKG_VER" -d '{"force":true}' >/dev/null || true
 fi
 
-# Check if policy already has Fleet Server integration
-HAS_FS="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies/$POLICY_ID" \
-  | jq -r '.item.package_policies[]? | select(.package.name==\"fleet_server\") | .id' | head -n1 || true)"
+# Check if policy already has Fleet Server integration (safe jq)
+POLICY_DETAIL_JSON="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies/$POLICY_ID")" || die "Failed to read policy details"
+HAS_FS="$(jq -r '[.item.package_policies[]? | select(.package.name=="fleet_server") | .id][0] // ""' <<<"$POLICY_DETAIL_JSON")"
 
 if [[ -z "$HAS_FS" ]]; then
   log "[local] Adding Fleet Server integration to policy '$POLICY_NAME'"
-  # Package policy name unique-ish
   FS_PP_NAME="fleet-server-$(hostname -s)-$TS"
-  ADD_PP_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/package_policies" \
-    -d "{\"name\":\"$FS_PP_NAME\",\"namespace\":\"default\",\"policy_id\":\"$POLICY_ID\",\"package\":{\"name\":\"fleet_server\"}}")"
+  read -r -d '' ADD_PP_BODY <<JSON
+{
+  "name": "$FS_PP_NAME",
+  "namespace": "default",
+  "policy_id": "$POLICY_ID",
+  "package": { "name": "fleet_server" }
+}
+JSON
+  ADD_PP_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/package_policies" -d "$ADD_PP_BODY")"
   PP_ID="$(echo "$ADD_PP_RESP" | jq -r '.item.id')"
   [[ -n "$PP_ID" && "$PP_ID" != "null" ]] || die "Failed to add Fleet Server integration to policy"
 else
