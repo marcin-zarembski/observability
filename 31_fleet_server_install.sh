@@ -33,6 +33,20 @@ What it does:
   - Uses either PEM cert+key (+CA) or converts P12 -> PEM locally.
   - Supports custom tags for the agent (--tag can be used multiple times).
   - Waits for agent to become healthy; prints diagnostics on failure.
+
+Examples:
+  PEM:
+    ./31_fleet_server_install.sh \
+      --agent-tar ./artifacts/elastic-agent-8.18.3-linux-x86_64.tar.gz \
+      --es-url https://es01:9200 \
+      --fleet-url https://$(hostname -f):8220 \
+      --service-token-file ./secrets/fleet_server_service_token \
+      --ca /etc/kibana/fleet/certs/ca.pem \
+      --cert /etc/kibana/fleet/certs/cert.pem \
+      --key  /etc/kibana/fleet/certs/key.pem \
+      --kbn-url https://$(hostname -f):5601 --kbn-user elastic --kbn-pass '***' --kbn-insecure \
+      --policy-name "Fleet Server Policy" \
+      --tag prod --tag mars
 EOF
   exit 0
 }
