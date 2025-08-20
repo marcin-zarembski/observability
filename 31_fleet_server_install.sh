@@ -33,19 +33,6 @@ What it does:
   - Uses either PEM cert+key (+CA) or converts P12 -> PEM locally.
   - Supports custom tags for the agent (--tag can be used multiple times).
   - Waits for agent to become healthy; prints diagnostics on failure.
-
-Example:
-  ./31_fleet_server_install.sh \
-    --agent-tar ./artifacts/elastic-agent-8.18.3-linux-x86_64.tar.gz \
-    --es-url https://es01:9200 \
-    --fleet-url https://$(hostname -f):8220 \
-    --service-token-file ./secrets/fleet_server_service_token \
-    --ca /etc/kibana/fleet/certs/ca.pem \
-    --cert /etc/kibana/fleet/certs/cert.pem \
-    --key  /etc/kibana/fleet/certs/key.pem \
-    --kbn-url https://$(hostname -f):5601 --kbn-user elastic --kbn-pass '***' --kbn-insecure \
-    --policy-name "Fleet Server Policy" \
-    --tag prod --tag mars
 EOF
   exit 0
 }
@@ -145,14 +132,20 @@ KBN_CURL_OPTS=(-sS -u "$KBN_USER:$KBN_PASS" -H 'kbn-xsrf: true' -H 'Content-Type
 (( KBN_INSECURE )) && KBN_CURL_OPTS+=(-k) || true
 [[ -n "$KBN_CA" ]] && KBN_CURL_OPTS+=(--cacert "$KBN_CA")
 
-# Find policy by name
+# 1) Find policy by name (or create)
 POLICIES_JSON="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies")" || die "Failed to list agent policies"
 POLICY_ID="$(jq -r --arg n "$POLICY_NAME" '.items[]? | select(.name==$n) | .id' <<<"$POLICIES_JSON" | head -n1 || true)"
 
 if [[ -z "${POLICY_ID:-}" || "$POLICY_ID" == "null" ]]; then
   log "[local] Creating policy '$POLICY_NAME'"
   read -r -d '' CREATE_POLICY_BODY <<JSON
-{"name":"$POLICY_NAME","namespace":"default","description":"Auto-created by installer","monitoring_enabled":["logs","metrics"],"is_default_fleet_server":true}
+{
+  "name":"$POLICY_NAME",
+  "namespace":"default",
+  "description":"Auto-created by installer",
+  "monitoring_enabled":["logs","metrics"],
+  "is_default_fleet_server": true
+}
 JSON
   CREATE_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/agent_policies" -d "$CREATE_POLICY_BODY")" || die "Create policy failed"
   POLICY_ID="$(jq -r '.item.id // empty' <<<"$CREATE_RESP")"
@@ -161,7 +154,7 @@ else
   log "[local] Using existing policy '$POLICY_NAME' (id=$POLICY_ID)"
 fi
 
-# Ensure fleet_server package installed (best-effort)
+# 2) Ensure fleet_server package is installed (best-effort)
 PKG_INFO="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/epm/packages/fleet_server" || true)"
 PKG_VER="$(jq -r '.item.version // .version // empty' <<<"$PKG_INFO" || true)"
 if [[ -n "$PKG_VER" ]]; then
@@ -169,15 +162,21 @@ if [[ -n "$PKG_VER" ]]; then
   curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/epm/packages/fleet_server/$PKG_VER" -d '{"force":true}' >/dev/null || true
 fi
 
-# Check if policy already has Fleet Server integration
+# 3) Check if policy already has Fleet Server integration
 POLICY_DETAIL_JSON="$(curl "${KBN_CURL_OPTS[@]}" "$KBN_URL/api/fleet/agent_policies/$POLICY_ID")" || die "Failed to read policy details"
 HAS_FS_ID="$(jq -r '[.item.package_policies[]? | select(.package.name=="fleet_server") | .id][0] // ""' <<<"$POLICY_DETAIL_JSON")"
 
+# 4) If missing, add Fleet Server package policy
 if [[ -z "$HAS_FS_ID" ]]; then
   log "[local] Adding Fleet Server integration to policy '$POLICY_NAME'"
   FS_PP_NAME="fleet-server-$(hostname -s)-$TS"
   read -r -d '' ADD_PP_BODY <<JSON
-{"name":"$FS_PP_NAME","namespace":"default","policy_id":"$POLICY_ID","package":{"name":"fleet_server"}}
+{
+  "name": "$FS_PP_NAME",
+  "namespace": "default",
+  "policy_id": "$POLICY_ID",
+  "package": { "name": "fleet_server" }
+}
 JSON
   ADD_PP_RESP="$(curl "${KBN_CURL_OPTS[@]}" -X POST "$KBN_URL/api/fleet/package_policies" -d "$ADD_PP_BODY")" || die "Add package policy failed"
   PP_ID="$(jq -r '.item.id // empty' <<<"$ADD_PP_RESP")"
