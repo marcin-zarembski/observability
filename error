@@ -9,13 +9,12 @@
 [3] Ensuring systemd limits and restart policy for Elasticsearch (no restart here)...
   Drop-in updated. Daemon reload will happen in final step.
 [4] Ensuring JVM heap size in /etc/elasticsearch/jvm.options ...
-  ERROR: /etc/elasticsearch/jvm.options not found
+  Updated heap settings to -Xms28g / -Xmx28g
 [5] Checking Transparent Huge Pages (THP)...
-  Current THP setting: [always] madvise never
+  Current THP setting: always madvise [never]
   Disabling THP...
-Created symlink /etc/systemd/system/multi-user.target.wants/disable-thp.service → /etc/systemd/system/disable-thp.service.
 [6] Ensuring bootstrap.memory_lock: true in elasticsearch.yml...
-  ERROR: /etc/elasticsearch/elasticsearch.yml not found
+  bootstrap.memory_lock set to true
 [7] Ensuring network sysctl tuning...
   OK: net.core.somaxconn = 4096
   OK: net.core.netdev_max_backlog = 16384
@@ -33,39 +32,14 @@ TasksMax=infinity
 LimitNOFILE=1048576
 LimitNPROC=64000
 KillSignal=15
-  Runtime /proc limits for PID 3581575 (user=svc9529):
+  Runtime /proc limits for PID 3593666 (user=svc9529):
 Max processes             64000                64000                processes
 Max open files            1048576              1048576              files
 Max locked memory         unlimited            unlimited            bytes
-  Checking JVM heap flags:
+  Checking JVM heap flags (from /proc/3593666/cmdline):
 /usr/share/elasticsearch/jdk/bin/java -Xms4m -Xmx64m -XX:+UseSerialGC -Dcli.name=server -Dcli.script=/usr/share/elasticsearch/bin/elasticsearch -Dcli.libs=lib/tools/server-cli -Des.path.home=/usr/share/elasticsearch -Des.path.conf=/etc/elasticsearch -Des.distribution.type=rpm -cp /usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/lib/cli-launcher/* org.elasticsearch.launcher.CliToolLauncher -p /var/run/elasticsearch/elasticsearch.pid --quiet
   Note: you can verify memory lock via: curl -s http://localhost:9200/_nodes?filter_path=**.process.mlockall
   Transparent Huge Pages setting: always madvise [never]
-  OK: THP is disabled
+  WARNING: THP may not be disabled correctly
 
 All done.
-
-
-
-[m024742-udm@ap-fanves21t ~]$ ls -al /etc/elasticsearch/
-ls: cannot open directory '/etc/elasticsearch/': Permission denied
-[m024742-udm@ap-fanves21t ~]$ sudo ls -al /etc/elasticsearch/
-total 112
-drwxr-s---.   5 root svc9529  4096 Aug  8 08:25 .
-drwxr-xr-x. 107 root root     8192 Aug 21 10:45 ..
-drwxr-x---.   2 root svc9529    62 Feb 20  2024 certs
--rw-rw----.   1 root svc9529   765 Jul  8 09:19 elasticsearch.keystore
--rw-rw----.   1 root svc9529  1042 Jun 19 00:13 elasticsearch-plugins.example.yml
--rw-rw----.   1 root svc9529  4685 Aug  8 08:25 elasticsearch.yml
--rw-rw----.   1 root svc9529  2752 Jul  8 09:28 jvm.options
--rw-r-----.   1 root svc9529  3113 Jul  8 09:18 jvm.options.backup_1751959083
-drwxr-s---.   2 root svc9529    24 Jun 19 00:16 jvm.options.d
--rw-rw----.   1 root svc9529  3074 Jun 19 00:13 jvm.options.rpmnew
-drwxr-sr-x.   2 root svc9529   114 Jan 22  2025 keys
--rw-r--r--.   1 root svc9529 20242 Mar  7 12:10 log4j2.properties
--rw-rw----.   1 root svc9529 17969 Jan 11  2024 log4j2.properties_backup
--rw-rw----.   1 root svc9529 18897 Jun 19 00:13 log4j2.properties.rpmnew
--rw-rw----.   1 root svc9529   566 Feb 20  2024 role_mapping.yml
--rw-rw----.   1 root svc9529   197 Jun 19 00:13 roles.yml
--rw-rw----.   1 root svc9529     0 Jun 19 00:13 users
--rw-rw----.   1 root svc9529     0 Jun 19 00:13 users_roles
