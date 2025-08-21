@@ -44,3 +44,28 @@ Max locked memory         unlimited            unlimited            bytes
   OK: THP is disabled
 
 All done.
+
+
+
+[m024742-udm@ap-fanves21t ~]$ ls -al /etc/elasticsearch/
+ls: cannot open directory '/etc/elasticsearch/': Permission denied
+[m024742-udm@ap-fanves21t ~]$ sudo ls -al /etc/elasticsearch/
+total 112
+drwxr-s---.   5 root svc9529  4096 Aug  8 08:25 .
+drwxr-xr-x. 107 root root     8192 Aug 21 10:45 ..
+drwxr-x---.   2 root svc9529    62 Feb 20  2024 certs
+-rw-rw----.   1 root svc9529   765 Jul  8 09:19 elasticsearch.keystore
+-rw-rw----.   1 root svc9529  1042 Jun 19 00:13 elasticsearch-plugins.example.yml
+-rw-rw----.   1 root svc9529  4685 Aug  8 08:25 elasticsearch.yml
+-rw-rw----.   1 root svc9529  2752 Jul  8 09:28 jvm.options
+-rw-r-----.   1 root svc9529  3113 Jul  8 09:18 jvm.options.backup_1751959083
+drwxr-s---.   2 root svc9529    24 Jun 19 00:16 jvm.options.d
+-rw-rw----.   1 root svc9529  3074 Jun 19 00:13 jvm.options.rpmnew
+drwxr-sr-x.   2 root svc9529   114 Jan 22  2025 keys
+-rw-r--r--.   1 root svc9529 20242 Mar  7 12:10 log4j2.properties
+-rw-rw----.   1 root svc9529 17969 Jan 11  2024 log4j2.properties_backup
+-rw-rw----.   1 root svc9529 18897 Jun 19 00:13 log4j2.properties.rpmnew
+-rw-rw----.   1 root svc9529   566 Feb 20  2024 role_mapping.yml
+-rw-rw----.   1 root svc9529   197 Jun 19 00:13 roles.yml
+-rw-rw----.   1 root svc9529     0 Jun 19 00:13 users
+-rw-rw----.   1 root svc9529     0 Jun 19 00:13 users_roles
