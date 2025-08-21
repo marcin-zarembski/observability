@@ -13,22 +13,31 @@ set -euo pipefail
 #   [7] Ensure network sysctl tuning (somaxconn, backlog, TCP params)
 # Final step: ONE restart of elasticsearch at the end of all checks.
 # Remote execution with: --hosts-file or --hosts-list (SSH)
+# Requires: passwordless sudo (NOPASSWD) on target hosts for the SSH user.
 # ------------------------------------------------------------
 
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
 SSH_USER=""
 HOSTS=()
+SSH_IDENTITY=""
+ALLOW_PASSWORD=0
+GSSAPI=0
+SSH_EXTRA_OPTS=""
 
 print_help() {
   cat <<EOF
 Usage:
-  $0 [--ssh-user <user>] [--hosts-file <file> | --hosts-list <h1> <h2> ...]
+  $0 [--ssh-user <user>] [--ssh-identity <path_to_key>] [--allow-password] \
+     [--gssapi] [--ssh-extra-opts "<opts>"] [--hosts-file <file> | --hosts-list <h1> <h2> ...]
 
 Options:
-  --ssh-user       SSH username to use for all hosts (optional; defaults to current user)
-  --hosts-file     File with hosts (one per line, comments starting with # allowed)
-  --hosts-list     Hosts passed directly as arguments
-  --help           Show this help and exit
+  --ssh-user <user>        SSH username to use for all hosts (defaults to local user if omitted)
+  --ssh-identity <file>    Path to private key to use for SSH (e.g., ~/.ssh/id_rsa)
+  --allow-password         Allow interactive password auth (sets BatchMode=no and prefers keyboard-interactive/password)
+  --gssapi                 Enable Kerberos/GSSAPI auth (requires a valid ticket; run 'kinit' beforehand)
+  --ssh-extra-opts "..."   Additional raw options passed to ssh (quoted string)
+  --hosts-file <file>      File with hosts (one per line, '#' comments allowed)
+  --hosts-list <h1> ...    Hosts passed directly as arguments
+  --help                   Show this help and exit
 
 Behavior:
   - Connects to each host via SSH and applies:
@@ -41,6 +50,10 @@ Behavior:
       [7] Ensure network sysctl tuning (somaxconn, backlog, TCP params)
   - Finally restarts elasticsearch ONCE and validates limits and heap.
   - Service user/group are discovered automatically on each host via systemd.
+
+Notes:
+  - This script requires passwordless sudo on the remote host for the connecting user.
+    It uses 'sudo -n' and will fail fast if a password is required.
 EOF
 }
 
@@ -51,6 +64,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --ssh-user)
       SSH_USER="$2"; shift 2;;
+    --ssh-identity)
+      SSH_IDENTITY="$2"; shift 2;;
+    --allow-password)
+      ALLOW_PASSWORD=1; shift;;
+    --gssapi)
+      GSSAPI=1; shift;;
+    --ssh-extra-opts)
+      SSH_EXTRA_OPTS="$2"; shift 2;;
     --hosts-file)
       [[ -f "$2" ]] || { echo "Error: hosts file '$2' not found" >&2; exit 1; }
       while IFS= read -r line; do
@@ -73,6 +94,27 @@ if ((${#HOSTS[@]}==0)); then
   exit 1
 fi
 
+# Build SSH options array
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+if [[ $ALLOW_PASSWORD -eq 1 ]]; then
+  SSH_OPTS+=(-o BatchMode=no -o PreferredAuthentications=keyboard-interactive,password,publickey -tt)
+else
+  SSH_OPTS+=(-o BatchMode=yes)
+fi
+if [[ $GSSAPI -eq 1 ]]; then
+  SSH_OPTS+=(-o GSSAPIAuthentication=yes -o GSSAPIDelegateCredentials=yes)
+else
+  SSH_OPTS+=(-o GSSAPIAuthentication=no)
+fi
+if [[ -n "$SSH_IDENTITY" ]]; then
+  SSH_OPTS+=(-i "$SSH_IDENTITY")
+fi
+if [[ -n "$SSH_EXTRA_OPTS" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_OPTS=( $SSH_EXTRA_OPTS )
+  SSH_OPTS+=("${EXTRA_OPTS[@]}")
+fi
+
 # -------------------------
 # Remote payload (executed on target)
 # -------------------------
@@ -80,6 +122,13 @@ REMOTE_SCRIPT=$(cat <<'REMOTE_PAYLOAD'
 set -euo pipefail
 
 log() { echo -e "$1"; }
+
+# Require passwordless sudo
+SUDO="sudo -n"
+if ! $SUDO true 2>/dev/null; then
+  echo "ERROR: passwordless sudo is required (configure NOPASSWD for this user)." >&2
+  exit 1
+fi
 
 get_es_identity() {
   local user group mainpid
@@ -99,13 +148,13 @@ check_and_disable_swap() {
   log "[1] Checking swap status..."
   if swapon --show | grep -q "."; then
     log "  Swap is ENABLED. Disabling now..."
-    sudo swapoff -a
+    $SUDO swapoff -a
     if grep -Eq '^[[:space:]]*[^#].*[[:space:]]swap[[:space:]]' /etc/fstab; then
       log "  Found active swap entries in /etc/fstab. Commenting them out..."
       TS=$(date +%Y%m%d-%H%M%S)
-      sudo cp -a /etc/fstab /etc/fstab.backup-$TS
-      sudo awk 'BEGIN{OFS="	"} /^[[:space:]]*#/ {print; next} NF>=3 && $3=="swap" {print "#" $0; next} {print}' /etc/fstab | sudo tee /etc/fstab.tmp >/dev/null
-      sudo mv /etc/fstab.tmp /etc/fstab
+      $SUDO cp -a /etc/fstab /etc/fstab.backup-$TS
+      awk 'BEGIN{OFS="	"} /^[[:space:]]*#/ {print; next} NF>=3 && $3=="swap" {print "#" $0; next} {print}' /etc/fstab | $SUDO tee /etc/fstab.tmp >/dev/null
+      $SUDO mv /etc/fstab.tmp /etc/fstab
     fi
     log "  Swap disabled."
   else
@@ -121,11 +170,11 @@ check_and_set_vm_max_map_count() {
     log "  Current value ($current) is lower than required ($target). Updating..."
     CONF_FILE="/etc/sysctl.d/99-elasticsearch.conf"
     if [[ -f "$CONF_FILE" ]] && grep -q "^vm.max_map_count" "$CONF_FILE"; then
-      sudo sed -i "s/^vm.max_map_count.*/vm.max_map_count = $target/" "$CONF_FILE"
+      $SUDO sed -i "s/^vm.max_map_count.*/vm.max_map_count = $target/" "$CONF_FILE"
     else
-      echo "vm.max_map_count = $target" | sudo tee -a "$CONF_FILE" >/dev/null
+      echo "vm.max_map_count = $target" | $SUDO tee -a "$CONF_FILE" >/dev/null
     fi
-    sudo sysctl -w vm.max_map_count=$target >/dev/null
+    $SUDO sysctl -w vm.max_map_count=$target >/dev/null
   else
     log "  vm.max_map_count is already sufficient: $current"
   fi
@@ -145,12 +194,12 @@ ensure_systemd_es_limits() {
   TS=$(date +%Y%m%d-%H%M%S)
   KEYS="LimitNOFILE=1048576;LimitNPROC=64000;LimitMEMLOCK=infinity;TasksMax=infinity;Restart=on-failure;RestartSec=5s;TimeoutStopSec=900;KillSignal=SIGTERM;OOMPolicy=continue"
 
-  sudo mkdir -p "$DROPIN_DIR"
+  $SUDO mkdir -p "$DROPIN_DIR"
   [[ -f "$UNIT_FILE" ]] || echo -e "[Unit]
-[Service]" | sudo tee "$UNIT_FILE" >/dev/null
-  sudo cp -a "$UNIT_FILE" "${UNIT_FILE}.backup-$TS"
+[Service]" | $SUDO tee "$UNIT_FILE" >/dev/null
+  $SUDO cp -a "$UNIT_FILE" "${UNIT_FILE}.backup-$TS"
 
-  sudo awk -v keys="$KEYS" '
+  awk -v keys="$KEYS" '
     BEGIN {
       n = split(keys, arr, ";");
       for (i=1;i<=n;i++) { split(arr[i], kv, "="); desired[kv[1]] = kv[2]; seen[kv[1]] = 0; }
@@ -178,7 +227,7 @@ ensure_systemd_es_limits() {
       if (in_service) { print_missing(); }
       if (!service_present) { print "[Service]"; for (k in desired) print k "=" desired[k]; }
     }
-  ' "$UNIT_FILE" | sudo tee "$UNIT_FILE.tmp" >/dev/null && sudo mv "$UNIT_FILE.tmp" "$UNIT_FILE"
+  ' "$UNIT_FILE" | $SUDO tee "$UNIT_FILE.tmp" >/dev/null && $SUDO mv "$UNIT_FILE.tmp" "$UNIT_FILE"
 
   log "  Drop-in updated. Daemon reload will happen in final step."
 }
@@ -191,8 +240,8 @@ ensure_jvm_heap_settings() {
   local XMX="-Xmx28g"
 
   if [[ -f "$FILE" ]]; then
-    sudo cp -a "$FILE" "${FILE}.backup-$TS"
-    sudo awk -v xms="$XMS" -v xmx="$XMX" '
+    $SUDO cp -a "$FILE" "${FILE}.backup-$TS"
+    awk -v xms="$XMS" -v xmx="$XMX" '
       BEGIN{found_xms=0; found_xmx=0}
       /^[[:space:]]*-/ {
         if ($0 ~ /^-Xms/) { if (!found_xms) {print xms; found_xms=1}; next}
@@ -203,7 +252,7 @@ ensure_jvm_heap_settings() {
         if (!found_xms) print xms;
         if (!found_xmx) print xmx;
       }
-    ' "$FILE" | sudo tee "$FILE.tmp" >/dev/null && sudo mv "$FILE.tmp" "$FILE"
+    ' "$FILE" | $SUDO tee "$FILE.tmp" >/dev/null && $SUDO mv "$FILE.tmp" "$FILE"
     log "  Updated heap settings to $XMS / $XMX"
   else
     log "  ERROR: $FILE not found"
@@ -218,10 +267,10 @@ ensure_thp_disabled() {
     log "  Current THP setting: $current"
     if ! echo "$current" | grep -q '\[never\]'; then
       log "  Disabling THP..."
-      echo never | sudo tee "$thp_file" >/dev/null || true
+      echo never | $SUDO tee "$thp_file" >/dev/null || true
       SERVICE_FILE="/etc/systemd/system/disable-thp.service"
       if [[ ! -f "$SERVICE_FILE" ]]; then
-        sudo tee "$SERVICE_FILE" >/dev/null <<EOF2
+        $SUDO tee "$SERVICE_FILE" >/dev/null <<EOF2
 [Unit]
 Description=Disable Transparent Huge Pages
 
@@ -232,7 +281,7 @@ ExecStart=/usr/bin/bash -c 'echo never > /sys/kernel/mm/transparent_hugepage/ena
 [Install]
 WantedBy=multi-user.target
 EOF2
-        sudo systemctl enable disable-thp.service >/dev/null
+        $SUDO systemctl enable disable-thp.service >/dev/null
       fi
     else
       log "  THP already disabled."
@@ -247,11 +296,11 @@ ensure_memory_lock_enabled() {
   local FILE="/etc/elasticsearch/elasticsearch.yml"
   local TS=$(date +%Y%m%d-%H%M%S)
   if [[ -f "$FILE" ]]; then
-    sudo cp -a "$FILE" "${FILE}.backup-$TS"
+    $SUDO cp -a "$FILE" "${FILE}.backup-$TS"
     if grep -q '^bootstrap.memory_lock:' "$FILE"; then
-      sudo sed -i 's/^bootstrap.memory_lock:.*/bootstrap.memory_lock: true/' "$FILE"
+      $SUDO sed -i 's/^bootstrap.memory_lock:.*/bootstrap.memory_lock: true/' "$FILE"
     else
-      echo "bootstrap.memory_lock: true" | sudo tee -a "$FILE" >/dev/null
+      echo "bootstrap.memory_lock: true" | $SUDO tee -a "$FILE" >/dev/null
     fi
     log "  bootstrap.memory_lock set to true"
   else
@@ -260,7 +309,7 @@ ensure_memory_lock_enabled() {
 }
 
 ensure_network_sysctl() {
-  log "[7] Ensuring network sysctl tuning..."
+  log "[7] Ensuring network/sysctl tuning..."
   local CONF_FILE="/etc/sysctl.d/99-elasticsearch.conf"
   local -a KV=(
     "net.core.somaxconn=4096"
@@ -271,18 +320,18 @@ ensure_network_sysctl() {
     "net.ipv4.ip_local_port_range=1024 65000"
   )
 
-  sudo touch "$CONF_FILE"
-  sudo chmod 0644 "$CONF_FILE"
+  $SUDO touch "$CONF_FILE"
+  $SUDO chmod 0644 "$CONF_FILE"
 
   for entry in "${KV[@]}"; do
     key="${entry%%=*}"
     val="${entry#*=}"
     if grep -q "^${key}[[:space:]]*=" "$CONF_FILE"; then
-      sudo sed -i "s|^${key}[[:space:]]*=.*|${key} = ${val}|" "$CONF_FILE"
+      $SUDO sed -i "s|^${key}[[:space:]]*=.*|${key} = ${val}|" "$CONF_FILE"
     else
-      echo "${key} = ${val}" | sudo tee -a "$CONF_FILE" >/dev/null
+      echo "${key} = ${val}" | $SUDO tee -a "$CONF_FILE" >/dev/null
     fi
-    sudo sysctl -w "${key}=${val}" >/dev/null || true
+    $SUDO sysctl -w "${key}=${val}" >/dev/null || true
   done
 
   local ok=1
@@ -301,9 +350,8 @@ ensure_network_sysctl() {
 
 final_restart_and_validate() {
   log "[8] Reloading systemd, restarting elasticsearch, and validating..."
-
-  sudo systemctl daemon-reload
-  sudo systemctl restart elasticsearch
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl restart elasticsearch
 
   # Retry loop up to 60s for elasticsearch to be active
   for i in {1..60}; do
@@ -316,7 +364,7 @@ final_restart_and_validate() {
 
   if ! systemctl is-active --quiet elasticsearch; then
     echo "  ERROR: Elasticsearch did not become active within 60s" >&2
-    sudo journalctl -u elasticsearch --no-pager -n 50 || true
+    $SUDO journalctl -u elasticsearch --no-pager -n 50 || true
     exit 1
   fi
 
@@ -331,7 +379,7 @@ final_restart_and_validate() {
     log "  Note: you can verify memory lock via: curl -s http://localhost:9200/_nodes?filter_path=**.process.mlockall"
   else
     log "  WARNING: Could not determine MainPID; printing recent logs:"
-    sudo journalctl -u elasticsearch --no-pager -n 50 || true
+    $SUDO journalctl -u elasticsearch --no-pager -n 50 || true
   fi
 
   if [[ -f /sys/kernel/mm/transparent_hugepage/enabled ]]; then
