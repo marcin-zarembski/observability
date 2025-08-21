@@ -1,0 +1,10 @@
+[m024742-udm@ap-fanves21t ~]$ ./es_optimize.sh --hosts-list ap-fanves21t
+
+============================
+>>> ap-fanves21t
+============================
+Warning: Permanently added 'ap-fanves21t,10.96.93.63' (ECDSA) to the list of known hosts.
+m024742-udm@ap-fanves21t: Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password).
+[ERROR] Host ap-fanves21t failed
+
+All done.
