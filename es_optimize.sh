@@ -76,7 +76,7 @@ fi
 # -------------------------
 # Remote payload (executed on target)
 # -------------------------
-read -r -d '' REMOTE_SCRIPT <<'"REMOTE_PAYLOAD"'
+REMOTE_SCRIPT=$(cat <<'REMOTE_PAYLOAD'
 set -euo pipefail
 
 log() { echo -e "$1"; }
@@ -353,7 +353,8 @@ ensure_thp_disabled
 ensure_memory_lock_enabled
 ensure_network_sysctl
 final_restart_and_validate
-"REMOTE_PAYLOAD"
+REMOTE_PAYLOAD
+)
 
 # -------------------------
 # Run on each host
