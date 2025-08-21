@@ -1,0 +1,23 @@
+processors:
+  - script:
+      ignore_failure: true
+      if: "ctx.agent != null && ctx.agent.tags != null"
+      lang: painless
+      source: >
+        if (ctx.tags == null) { ctx.tags = new ArrayList(); }
+        for (t in ctx.agent.tags) {
+          if (t != null && !ctx.tags.contains(t)) { ctx.tags.add(t); }
+        }
+
+        
+elasticsearch:
+  processors:
+    - script:
+        ignore_failure: true
+        if: "ctx.agent != null && ctx.agent.tags != null"
+        lang: painless
+        source: >
+          if (ctx.tags == null) { ctx.tags = new ArrayList(); }
+          for (t in ctx.agent.tags) {
+            if (t != null && !ctx.tags.contains(t)) { ctx.tags.add(t); }
+          }
