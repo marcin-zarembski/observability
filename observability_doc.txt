@@ -1,0 +1,291 @@
+Observability Implementation on Elasticsearch Stack
+
+Overview
+
+This document describes the implementation of the Observability solution using the Elasticsearch Stack in an air-gapped environment.
+The deployment is based on version 8.18.3 of the Elastic Stack and covers the setup of the Elastic Package Registry (EPR), Fleet Server, Elastic Agents, pipelines, and policies.
+
+The Observability solution is hosted on the TEST environment, but Elastic Agents from both TEST and DEV environments report their data to the same central stack.
+
+⸻
+
+Components
+
+Elastic Package Registry (EPR)
+	•	Provides integration packages required by Fleet and Elastic Agents
+	•	Deployed in the same host as the Fleet Server
+	•	Operates in the air-gapped setup (packages are served locally)
+	•	Accessible on port 8443
+
+Fleet Server
+	•	Central control point for managing Elastic Agents
+	•	Runs on the same server as the EPR
+	•	Connected agents retrieve configuration and policy updates through Fleet
+
+Elastic Agent
+	•	Deployed across DEV and TEST hosts
+	•	Collects logs and metrics and ships them to Elasticsearch
+	•	Agents are enrolled into Fleet and assigned policies
+	•	Each agent uses agent.tags to indicate its environment (DEV or TEST)
+
+⸻
+
+Network and Ports
+	•	EPR: https://ap-fanves20t:8443
+	•	Fleet Server: https://ap-fanves20t:8220
+	•	Elasticsearch output: https://ap-fanves20t:9200
+
+Ports in use:
+	•	8443 – Elastic Package Registry (EPR)
+	•	8220 – Fleet Server communication
+	•	9200 – Elasticsearch ingestion endpoint
+
+⸻
+
+Hostnames
+	•	Fleet/EPR server: ap-fanves20t
+	•	DEV agents:
+	•	ap-fanves11c.oneadr.net
+	•	ap-fanves10c.oneadr.net
+	•	ap-fanves13c.oneadr.net
+	•	ap-fanves12c.oneadr.net
+	•	TEST agents:
+	•	ap-fanves26t.oneadr.net
+	•	ap-fanves25t.oneadr.net
+	•	ap-fanves24t.oneadr.net
+	•	ap-fanves23t.oneadr.net
+	•	ap-fanves22t.oneadr.net
+	•	ap-fanves21t.oneadr.net
+
+⸻
+
+Policies
+
+Agent Policies
+	•	Observability Policy (rev. 10)
+	•	Default observability policy for DEV and TEST agents
+	•	Air-gapped configuration
+	•	Fleet Server Policy (rev. 12)
+	•	Assigned to the Fleet/EPR host
+	•	Auto-created by installer
+
+ILM Policies
+	•	Default metrics policy – deletes metrics data after 7 days
+	•	Default logs policy – deletes logs data after 7 days
+
+⸻
+
+Enrichment and Pipelines
+
+Enrichment Policy
+	•	Name: agent_tags_policy
+	•	Definition:
+	•	Indices: .fleet-agents
+	•	Match field: agent.id
+	•	Enrich fields: tags
+	•	Executed to generate the enrich index for tag lookups
+
+Enrichment Pipeline: agent-tags-enrich
+	•	Processors:
+	•	Enrich processor: Looks up agent.id in .fleet-agents and retrieves tags
+	•	Foreach/Append processor: Appends retrieved tags to the document field tags (no duplicates)
+	•	Remove processor: Cleans up temporary _enriched_agent field
+
+Final Ingest Pipeline
+	•	Name: .fleet_final_pipeline-1
+	•	Applied to all incoming Fleet Agent documents
+	•	Processors:
+	•	Removes sensitive _security field
+	•	Executes agent-tags-enrich pipeline for every document
+
+⸻
+
+Data Lifecycle
+	•	All ingested logs and metrics are written to the respective data streams
+	•	Data lifecycle management is handled by default ILM policies:
+	•	Logs and metrics retained for 7 days
+	•	Data older than 7 days is deleted automatically
+
+
+
+
+{mermaid}
+graph LR
+  A[Elastic Agents (DEV + TEST) <br> agent.tags = DEV/TEST] -->|Enroll + Policies| B[Fleet Server (8220) + EPR (8443) <br> ap-fanves20t]
+  A -->|Logs & Metrics Data| C[Elasticsearch (9200) <br> ap-fanves20t]
+  C --> D[Ingest Pipeline <br> .fleet_final_pipeline-1 → agent-tags-enrich]
+  D --> E[ILM Policies <br> logs + metrics, 7 days retention]
+{mermaid}
+
+
+
+Elastic Agents (DEV + TEST)
+  | agent.tags = DEV/TEST
+  |--> Fleet Server (8220) + EPR (8443)
+  |--> Elasticsearch (9200)
+             |
+             v
+   Ingest Pipeline (.fleet_final_pipeline-1)
+             |
+             v
+   agent-tags-enrich → ILM (7 days retention)
+
+
+
+h1. Technical Documentation: Observability Implementation on Elasticsearch Stack
+
+h2. Overview
+This document describes the implementation of the Observability solution using the Elasticsearch Stack in an air-gapped environment.
+The deployment is based on version *8.18.3* of the Elastic Stack and covers the setup of the Elastic Package Registry (EPR), Fleet Server, Elastic Agents, pipelines, and policies.
+
+{info\:title=Environment}
+The Observability solution is hosted on the *TEST* environment, but Elastic Agents from both *TEST* and *DEV* environments report their data to the same central stack.
+{info}
+
+---
+
+h2. Components
+
+h3. Elastic Package Registry (EPR)
+
+* Provides integration packages required by Fleet and Elastic Agents
+* Deployed on the same host as the Fleet Server
+* Operates in the air-gapped setup (packages are served locally)
+* Accessible on port *8443*
+
+h3. Fleet Server
+
+* Central control point for managing Elastic Agents
+* Runs on the same server as the EPR
+* Connected agents retrieve configuration and policy updates through Fleet
+
+h3. Elastic Agent
+
+* Deployed across DEV and TEST hosts
+* Collects logs and metrics and ships them to Elasticsearch
+* Agents are enrolled into Fleet and assigned policies
+* Each agent uses *agent.tags* to indicate its environment (DEV or TEST)
+
+---
+
+h2. Network and Ports
+|| Component || Host || Port ||
+\| EPR | ap-fanves20t | 8443 |
+\| Fleet Server | ap-fanves20t | 8220 |
+\| Elasticsearch | ap-fanves20t | 9200 |
+
+Protocol: HTTPS
+
+---
+
+h2. Hostnames
+
+* *Fleet/EPR server*: ap-fanves20t
+* *DEV agents*:
+  \*\* ap-fanves11c.oneadr.net
+  \*\* ap-fanves10c.oneadr.net
+  \*\* ap-fanves13c.oneadr.net
+  \*\* ap-fanves12c.oneadr.net
+* *TEST agents*:
+  \*\* ap-fanves26t.oneadr.net
+  \*\* ap-fanves25t.oneadr.net
+  \*\* ap-fanves24t.oneadr.net
+  \*\* ap-fanves23t.oneadr.net
+  \*\* ap-fanves22t.oneadr.net
+  \*\* ap-fanves21t.oneadr.net
+
+---
+
+h2. Policies
+
+h3. Agent Policies
+
+* *Observability Policy (rev. 10)*
+  \*\* Default observability policy for DEV and TEST agents
+  \*\* Air-gapped configuration
+* *Fleet Server Policy (rev. 12)*
+  \*\* Assigned to the Fleet/EPR host
+  \*\* Auto-created by installer
+
+h3. ILM Policies
+
+* *Default metrics policy* – deletes metrics data after 7 days
+* *Default logs policy* – deletes logs data after 7 days
+
+{note\:title=ILM Retention}
+Logs and metrics are retained for 7 days and then deleted automatically.
+{note}
+
+---
+
+h2. Enrichment and Pipelines
+
+h3. Enrichment Policy
+
+* *Name*: agent\_tags\_policy
+* *Definition*:
+  \*\* Indices: .fleet-agents
+  \*\* Match field: agent.id
+  \*\* Enrich fields: tags
+* Executed to generate the enrich index for tag lookups
+
+h3. Enrichment Pipeline: agent-tags-enrich
+
+* *Processors*:
+  \*\* Enrich processor: Looks up agent.id in .fleet-agents and retrieves tags
+  \*\* Foreach/Append processor: Appends retrieved tags to the document field *tags* (avoiding duplicates)
+  \*\* Remove processor: Cleans up temporary *\_enriched\_agent* field
+
+h3. Final Ingest Pipeline
+
+* *Name*: .fleet\_final\_pipeline-1
+* Applied to all incoming Fleet Agent documents
+* *Processors*:
+  \*\* Removes sensitive *\_security* field
+  \*\* Executes *agent-tags-enrich* pipeline for every document
+
+---
+
+h2. Data Lifecycle
+
+* All ingested logs and metrics are written to the respective *data streams*
+* Data lifecycle management is handled by default *ILM policies*:
+  \*\* Logs and metrics retained for 7 days
+  \*\* Data older than 7 days is deleted automatically
+
+---
+
+h2. Data Flow Diagram
+
+If Mermaid macro is available:
+
+{mermaid}
+graph LR
+A\[Elastic Agents (DEV + TEST) <br> agent.tags = DEV/TEST] -->|Enroll + Policies| B\[Fleet Server (8220) + EPR (8443) <br> ap-fanves20t]
+A -->|Logs & Metrics Data| C\[Elasticsearch (9200) <br> ap-fanves20t]
+C --> D\[Ingest Pipeline <br> .fleet\_final\_pipeline-1 → agent-tags-enrich]
+D --> E\[ILM Policies <br> logs + metrics, 7 days retention]
+{mermaid}
+
+If Mermaid is not enabled, use ASCII fallback:
+
+{code}
+Elastic Agents (DEV + TEST)
+\| agent.tags = DEV/TEST
+\|--> Fleet Server (8220) + EPR (8443)
+\|--> Elasticsearch (9200)
+|
+v
+Ingest Pipeline (.fleet\_final\_pipeline-1)
+|
+v
+agent-tags-enrich → ILM (7 days retention)
+{code}
+
+---
+
+h2. Summary
+This setup provides an Observability solution based on Elasticsearch *8.18.3*, running in an isolated air-gapped TEST environment.
+Both DEV and TEST agents report to the same Fleet and Elasticsearch instance.
+Agents are tagged with their environment via *agent.tags*. The enrichment policy ensures these tags are applied to ingested documents through a global pipeline.
+Data retention is enforced with default 7-day ILM policies.
