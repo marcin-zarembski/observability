@@ -1,0 +1,105 @@
+Elasticsearch OS Optimization Script — Documentation
+
+Overview
+
+This script automates operating system and service-level tuning for Elasticsearch nodes running on RHEL8 with XFS. It is designed to:
+	•	Apply recommended Elasticsearch OS tuning settings.
+	•	Ensure consistent JVM and systemd configurations.
+	•	Disable problematic kernel features (swap, Transparent Huge Pages).
+	•	Restart Elasticsearch cleanly after all changes.
+	•	Run remotely on multiple hosts via SSH.
+
+Implemented Optimizations
+
+The script applies the following changes on each host:
+	1.	Swap Disabled
+	•	Disables swap immediately (swapoff -a).
+	•	Comments out swap entries in /etc/fstab to persist across reboots.
+	2.	vm.max_map_count
+	•	Ensures vm.max_map_count >= 262144 (runtime and persistent config in /etc/sysctl.d/99-elasticsearch.conf).
+	3.	Systemd Drop-in for Elasticsearch
+	•	Creates/updates /etc/systemd/system/elasticsearch.service.d/elasticsearch.conf.
+	•	Applies critical limits and restart policies:
+	•	LimitNOFILE=1048576
+	•	LimitNPROC=64000
+	•	LimitMEMLOCK=infinity
+	•	TasksMax=infinity
+	•	Restart=on-failure, RestartSec=5s
+	•	TimeoutStopSec=300
+	•	KillSignal=SIGTERM
+	•	OOMPolicy=continue
+	4.	JVM Heap Size
+	•	Ensures /etc/elasticsearch/jvm.options contains -Xms28g and -Xmx28g.
+	•	Existing settings are replaced, backup file is created.
+	5.	Transparent Huge Pages (THP)
+	•	Disables THP (/sys/kernel/mm/transparent_hugepage/enabled).
+	•	Creates a disable-thp.service systemd unit to persist change across reboots.
+	6.	Memory Lock
+	•	Ensures bootstrap.memory_lock: true is present in /etc/elasticsearch/elasticsearch.yml.
+	7.	Network sysctl tuning
+	•	Ensures following values in /etc/sysctl.d/99-elasticsearch.conf and runtime:
+	•	net.core.somaxconn = 4096
+	•	net.core.netdev_max_backlog = 16384
+	•	net.ipv4.tcp_max_syn_backlog = 8192
+	•	net.ipv4.tcp_fin_timeout = 30
+	•	net.ipv4.tcp_tw_reuse = 1
+	•	net.ipv4.ip_local_port_range = 1024 65000
+	8.	Final Restart and Validation
+	•	Runs systemctl daemon-reload and restarts Elasticsearch once.
+	•	Validates service limits, heap flags, and THP state.
+	•	Prints Elasticsearch process limits and JVM flags.
+
+⸻
+Requirements
+	•	Passwordless sudo (NOPASSWD) for the SSH user on all target hosts.
+	•	SSH connectivity to target hosts.
+	•	RHEL8 with Elasticsearch installed.
+	•	Bash available on both local and remote systems.
+
+⸻
+Usage
+
+Run locally, connecting to one or more remote hosts:
+
+./es_optimize.sh --ssh-user <user> [--hosts-file <file> | --hosts-list <h1> <h2> ...]
+
+Options
+	•	--ssh-user <user> → SSH username (if omitted, current local user is used).
+	•	--hosts-file <file> → File with hostnames/IPs (one per line, # for comments).
+	•	--hosts-list <h1> <h2> ... → Hosts provided inline.
+	•	--help → Show help.
+
+Examples
+
+Run on a single host:
+./es_optimize.sh --ssh-user svc9529 --hosts-list es-node01
+
+Run on multiple hosts from file:
+./es_optimize.sh --ssh-user svc9529 --hosts-file ./hosts.txt
+
+
+⸻
+Backups Created
+	•	/etc/fstab.backup-<timestamp> → Before commenting swap entries.
+	•	/etc/elasticsearch/jvm.options.backup-<timestamp> → Before modifying JVM options.
+	•	/etc/elasticsearch/elasticsearch.yml.backup-<timestamp> → Before modifying YAML.
+	•	/etc/systemd/system/elasticsearch.service.d/elasticsearch.conf.backup-<timestamp> → Before modifying drop-in.
+
+⸻
+Verification
+
+After execution, the script validates:
+	•	Swap is disabled.
+	•	vm.max_map_count is correct.
+	•	systemd drop-in contains all required directives.
+	•	JVM heap size matches expected values.
+	•	THP is disabled.
+	•	bootstrap.memory_lock: true is present.
+	•	Network sysctls match target values.
+	•	Elasticsearch service restarted successfully.
+
+⸻
+Notes
+	•	Changes are idempotent: running script multiple times keeps system in desired state.
+	•	Backups are created with timestamps before each modification.
+	•	Only one final Elasticsearch restart is performed, regardless of number of changes.
