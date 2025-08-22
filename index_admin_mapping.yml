@@ -1,0 +1,33 @@
+# Creates the technical index that stores one document per Elasticsearch index (doc_id = index name).
+# Fields:
+# - index:           index name (keyword)
+# - size_bytes:      current store size in bytes (long)
+# - docs_count:      current docs count (long)
+# - created_at:      creation time of the ES index (date, ISO8601)
+# - last_write_at:   last observed write (index/create/update/delete) time (date)
+# - last_read_at:    last observed read (search/get) time (date)
+# - updated_at:      time when this snapshot was written (date)
+# - counters.*:      last seen monotonic counters used for deltas in the next run
+PUT admin-index-usage
+{
+  "mappings": {
+    "properties": {
+      "index":            { "type": "keyword" },
+ "@timestamp":       { "type": "date" }
+      "size_bytes":       { "type": "long" },
+      "docs_count":       { "type": "long" },
+      "created_at":       { "type": "date" },
+      "last_write_at":    { "type": "date" },
+      "last_read_at":     { "type": "date" },
+      "updated_at":       { "type": "date" },
+      "counters": {
+        "properties": {
+          "index_total":        { "type": "long" },   # total index/create/update ops
+          "delete_total":       { "type": "long" },   # total delete ops
+          "search_query_total": { "type": "long" },   # total search queries
+          "get_total":          { "type": "long" }    # total GET-by-id
+        }
+      }
+    }
+  }
+}
