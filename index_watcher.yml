@@ -1,0 +1,248 @@
+PUT _watcher/watch/admin_index_usage_every_5m
+{
+  "trigger": { "schedule": { "interval": "5m" } },
+
+  "input": {
+    "chain": {
+      "inputs": [
+        {
+          "prev": {
+            # Pull the last known counters and timestamps per index from admin-index-usage.
+            "search": {
+              "request": {
+                "indices": [ "admin-index-usage" ],
+                "body": {
+                  "size": 0,
+                  "aggs": {
+                    "by_index": {
+                      "terms": { "field": "index", "size": 10000 },
+                      "aggs": {
+                        "latest": {
+                          "top_hits": {
+                            "size": 1,
+                            "sort": [{ "updated_at": { "order": "desc" } }],
+                            "_source": {
+                              "includes": [
+                                "index",
+                                "last_write_at",
+                                "last_read_at",
+                                "counters.index_total",
+                                "counters.delete_total",
+                                "counters.search_query_total",
+                                "counters.get_total"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "stats": {
+            # Current stats for all indices (store/docs/indexing/search/get).
+            "http": {
+              "request": {
+                "scheme": "https",
+                "host": "ap-fanves121p",
+                "port": 9200,
+                "method": "GET",
+                "path": "/_stats/store,docs,indexing,search,get?filter_path=indices.*.total.store.size_in_bytes,indices.*.total.docs.count,indices.*.total.indexing.index_total,indices.*.total.indexing.delete_total,indices.*.total.search.query_total,indices.*.total.get.total"
+              }
+            }
+          }
+        },
+        {
+          "list": {
+            # List of indices (used to optionally filter out system/hidden ones that start with '.').
+            "http": {
+              "request": {
+                "scheme": "https",
+                "host": "ap-fanves121p",
+                "port": 9200,
+                "method": "GET",
+                "path": "/_cat/indices?format=json&h=index&expand_wildcards=open,hidden"
+              }
+            }
+          }
+        },
+        {
+          "creations": {
+            # Creation dates from settings (ms since epoch).
+            "http": {
+              "request": {
+                "scheme": "https",
+                "host": "ap-fanves121p",
+                "port": 9200,
+                "method": "GET",
+                "path": "/_all/_settings?filter_path=*.settings.index.creation_date"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+
+  "transform": {
+    "script": {
+      "lang": "painless",
+      "source": """
+        // --------------------------
+        // Runtime configuration
+        // --------------------------
+        boolean includeSystem = false; // include indices starting with '.'
+        boolean alsoIndexRaw  = false; // mirror each run into admin-index-usage-raw
+
+        String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
+
+        // Build a map of previous counters and last_* timestamps, keyed by index name.
+        Map<String,Object> prevMap = new HashMap<>();
+        if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
+          for (def b : ctx.payload.prev.aggregations.by_index.buckets) {
+            def hit = b.latest.hits.hits[0];
+            def src = hit._source;
+            prevMap.put(src.index, [
+              "index_total":        (src.counters?.index_total        != null ? src.counters.index_total        : 0L),
+              "delete_total":       (src.counters?.delete_total       != null ? src.counters.delete_total       : 0L),
+              "search_query_total": (src.counters?.search_query_total != null ? src.counters.search_query_total : 0L),
+              "get_total":          (src.counters?.get_total          != null ? src.counters.get_total          : 0L),
+              "last_write_at":       src.last_write_at,
+              "last_read_at":        src.last_read_at
+            ]);
+          }
+        }
+
+        // Build the allowed set of indices (skip system ones unless includeSystem=true).
+        Set<String> allowed = new HashSet<>();
+        for (def row : ctx.payload.list) {
+          def name = row.index;
+          if (!includeSystem && name.startsWith(".")) continue;
+          allowed.add(name);
+        }
+
+        def stats = ctx.payload.stats.indices;
+        def creations = ctx.payload.creations;
+
+        List docs = new ArrayList();
+        List rawDocs = new ArrayList();
+
+        for (def entry : stats.entrySet()) {
+          String idx = entry.getKey();
+          if (!allowed.contains(idx)) continue;
+
+          def tot = entry.getValue().total;
+
+          long sizeB   = (tot?.store?.size_in_bytes      != null ? tot.store.size_in_bytes      : 0L);
+          long docsCnt = (tot?.docs?.count               != null ? tot.docs.count               : 0L);
+          long cIndex  = (tot?.indexing?.index_total     != null ? tot.indexing.index_total     : 0L);
+          long cDelete = (tot?.indexing?.delete_total    != null ? tot.indexing.delete_total    : 0L);
+          long cSearch = (tot?.search?.query_total       != null ? tot.search.query_total       : 0L);
+          long cGet    = (tot?.get?.total                != null ? tot.get.total                : 0L);
+
+          // created_at from settings (ms -> ISO8601)
+          String createdAt = null;
+          def cnode = creations[idx];
+          if (cnode != null && cnode.settings != null && cnode.settings.index != null && cnode.settings.index.creation_date != null) {
+            try {
+              long ms = Long.parseLong(cnode.settings.index.creation_date.toString());
+              createdAt = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toString();
+            } catch (Exception e) { /* ignore parse issues */ }
+          }
+
+          def prev = prevMap.get(idx);
+
+          String lastWrite = prev != null ? (String)prev.last_write_at : null;
+          String lastRead  = prev != null ? (String)prev.last_read_at  : null;
+
+          boolean isFirst = (prev == null);
+          boolean isReset = false;
+
+          if (!isFirst) {
+            long pIdx = (prev.index_total        instanceof Number ? ((Number)prev.index_total).longValue()        : 0L);
+            long pDel = (prev.delete_total       instanceof Number ? ((Number)prev.delete_total).longValue()       : 0L);
+            long pSea = (prev.search_query_total instanceof Number ? ((Number)prev.search_query_total).longValue() : 0L);
+            long pGet = (prev.get_total          instanceof Number ? ((Number)prev.get_total).longValue()          : 0L);
+
+            // Counter reset: any current counter < previous => likely restart/relocation/rollover.
+            isReset = (cIndex < pIdx) || (cDelete < pDel) || (cSearch < pSea) || (cGet < pGet);
+
+            if (!isReset) {
+              // WRITE: any increase in index_total or delete_total.
+              if (cIndex > pIdx || cDelete > pDel) {
+                lastWrite = now;
+              }
+              // READ: any increase in search.query_total or get.total.
+              if (cSearch > pSea || cGet > pGet) {
+                lastRead = now;
+              }
+            }
+            // On reset: keep last_* unchanged (retain last known dates), only re-seed counters.
+          }
+          // On first run: leave last_* as null (do not set).
+
+          Map doc = new HashMap();
+          doc.put("index", idx);
+          doc.put("size_bytes", sizeB);
+          doc.put("docs_count", docsCnt);
+          doc.put("created_at", createdAt);
+          doc.put("last_write_at", lastWrite);
+          doc.put("last_read_at",  lastRead);
+          doc.put("updated_at", now);
+          doc.put("counters", [
+            "index_total":        cIndex,
+            "delete_total":       cDelete,
+            "search_query_total": cSearch,
+            "get_total":          cGet
+          ]);
+
+          docs.add(doc);
+
+          if (alsoIndexRaw) {
+            def raw = new HashMap(doc);
+            raw.put("@timestamp", now);
+            rawDocs.add(raw);
+          }
+        }
+
+        return ["docs": docs, "rawDocs": rawDocs];
+      """
+    }
+  },
+
+  "actions": {
+    "upsert_each_index": {
+      # One doc per ES index; doc_id = index name for idempotent upsert-like behavior.
+      "foreach": "ctx.payload.docs",
+      "max_iterations": 20000,
+      "index": {
+        "index": "admin-index-usage",
+        "doc_id": "{{ctx.payload._value.index}}",
+        "doc": "{{ctx.payload._value}}",
+        "execution_time_field": "updated_at"
+      }
+    },
+    "optional_raw_history": {
+      # Enable by setting alsoIndexRaw=true in the transform.
+      "condition": { "script": "return ctx.payload.rawDocs != null && !ctx.payload.rawDocs.isEmpty();" },
+      "foreach": "ctx.payload.rawDocs",
+      "index": {
+        "index": "admin-index-usage-raw",
+        "doc": "{{ctx.payload._value}}"
+      }
+    },
+    "log_summary": {
+      "logging": { "text": "admin-index-usage: upserted {{ctx.payload.docs.size()}} docs" }
+    }
+  },
+
+  "metadata": {
+    "description": "Every 5 min snapshot of index metrics with heuristic last_read/last_write, first-run nulls, and counter-reset protection."
+  },
+
+  "throttle_period": "0s"
+}
