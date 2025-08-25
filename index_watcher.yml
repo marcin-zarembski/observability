@@ -205,9 +205,9 @@ PUT _watcher/watch/admin_index_usage_every_5m
       "max_iterations": 20000,
       "index": {
         "index": "admin-index-usage",
-        "doc_id": "{{ctx.payload._value.index}}",
-        "doc": "{{ctx.payload._value}}",
-        "execution_time_field": "updated_at"
+        "id": "{{ctx.payload._value.index}}",
+        "execution_time_field": "updated_at",
+        "body": "{{ctx.payload._value}}"
       }
     },
     "optional_raw_history": {
@@ -215,7 +215,7 @@ PUT _watcher/watch/admin_index_usage_every_5m
       "foreach": "ctx.payload.rawDocs",
       "index": {
         "index": "admin-index-usage-raw",
-        "doc": "{{ctx.payload._value}}"
+        "body": "{{ctx.payload._value}}"
       }
     },
     "log_summary": {
