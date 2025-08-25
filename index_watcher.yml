@@ -1,6 +1,6 @@
-PUT _watcher/watch/admin_index_usage_every_5m
+PUT _watcher/watch/admin_index_usage_every_15m
 {
-  "trigger": { "schedule": { "interval": "5m" } },
+  "trigger": { "schedule": { "interval": "15m" } },
   "input": {
     "chain": {
       "inputs": [
@@ -87,7 +87,7 @@ PUT _watcher/watch/admin_index_usage_every_5m
       "lang": "painless",
       "source": """
         boolean includeSystem = false;
-        boolean alsoIndexRaw  = false;
+        boolean alsoIndexRaw  = false;   // set true if you also want per-run history to admin-index-usage-raw
 
         String now = ctx.trigger.triggered_time.toInstant().toString();
 
@@ -200,30 +200,40 @@ PUT _watcher/watch/admin_index_usage_every_5m
     }
   },
   "actions": {
-    "upsert_each_index": {
-      "foreach": "ctx.payload.docs",
-      "max_iterations": 20000,
-      "index": {
-        "index": "admin-index-usage",
-        "id": "{{ctx.payload._value.index}}",
-        "execution_time_field": "updated_at",
-        "body": "{{ctx.payload._value}}"
+    "bulk_snapshot": {
+      "http": {
+        "request": {
+          "scheme": "https",
+          "host": "ap-fanves121p",
+          "port": 9200,
+          "method": "POST",
+          "path": "/_bulk?refresh=false",
+          "headers": { "Content-Type": "application/x-ndjson" },
+          "body": "{{#ctx.payload.docs}}{\"index\":{\"_index\":\"admin-index-usage\",\"_id\":\"{{index}}\"}}\n{{#toJson}}{{.}}{{/toJson}}\n{{/ctx.payload.docs}}"
+        }
       }
     },
-    "optional_raw_history": {
-      "condition": { "script": "return ctx.payload.rawDocs != null && !ctx.payload.rawDocs.isEmpty();" },
-      "foreach": "ctx.payload.rawDocs",
-      "index": {
-        "index": "admin-index-usage-raw",
-        "body": "{{ctx.payload._value}}"
+    "bulk_raw_history": {
+      "condition": { "script": "return params.enable && ctx.payload.rawDocs != null && !ctx.payload.rawDocs.isEmpty();" ,
+                     "params": { "enable": false } },
+      "http": {
+        "request": {
+          "scheme": "https",
+          "host": "ap-fanves121p",
+          "port": 9200,
+          "method": "POST",
+          "path": "/_bulk?refresh=false",
+          "headers": { "Content-Type": "application/x-ndjson" },
+          "body": "{{#ctx.payload.rawDocs}}{\"index\":{\"_index\":\"admin-index-usage-raw\"}}\n{{#toJson}}{{.}}{{/toJson}}\n{{/ctx.payload.rawDocs}}"
+        }
       }
     },
     "log_summary": {
-      "logging": { "text": "admin-index-usage: upserted {{ctx.payload.docs.size()}} docs" }
+      "logging": { "text": "admin-index-usage: bulked {{ctx.payload.docs.size()}} docs (15m schedule)" }
     }
   },
   "metadata": {
-    "description": "Every 5 min snapshot of index metrics with heuristic last_read/last_write, first-run nulls, and counter-reset protection."
+    "description": "Every 15 min snapshot of index metrics with heuristic last_read/last_write, first-run nulls, and counter-reset protection; bulk indexing."
   },
   "throttle_period": "0s"
 }
