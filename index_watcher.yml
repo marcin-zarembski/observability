@@ -1,13 +1,11 @@
 PUT _watcher/watch/admin_index_usage_every_5m
 {
   "trigger": { "schedule": { "interval": "5m" } },
-
   "input": {
     "chain": {
       "inputs": [
         {
           "prev": {
-            # Pull the last known counters and timestamps per index from admin-index-usage.
             "search": {
               "request": {
                 "indices": [ "admin-index-usage" ],
@@ -20,7 +18,7 @@ PUT _watcher/watch/admin_index_usage_every_5m
                         "latest": {
                           "top_hits": {
                             "size": 1,
-                            "sort": [{ "updated_at": { "order": "desc" } }],
+                            "sort": [ { "updated_at": { "order": "desc" } } ],
                             "_source": {
                               "includes": [
                                 "index",
@@ -44,7 +42,6 @@ PUT _watcher/watch/admin_index_usage_every_5m
         },
         {
           "stats": {
-            # Current stats for all indices (store/docs/indexing/search/get).
             "http": {
               "request": {
                 "scheme": "https",
@@ -58,7 +55,6 @@ PUT _watcher/watch/admin_index_usage_every_5m
         },
         {
           "list": {
-            # List of indices (used to optionally filter out system/hidden ones that start with '.').
             "http": {
               "request": {
                 "scheme": "https",
@@ -72,7 +68,6 @@ PUT _watcher/watch/admin_index_usage_every_5m
         },
         {
           "creations": {
-            # Creation dates from settings (ms since epoch).
             "http": {
               "request": {
                 "scheme": "https",
@@ -87,20 +82,15 @@ PUT _watcher/watch/admin_index_usage_every_5m
       ]
     }
   },
-
   "transform": {
     "script": {
       "lang": "painless",
       "source": """
-        // --------------------------
-        // Runtime configuration
-        // --------------------------
-        boolean includeSystem = false; // include indices starting with '.'
-        boolean alsoIndexRaw  = false; // mirror each run into admin-index-usage-raw
+        boolean includeSystem = false;
+        boolean alsoIndexRaw  = false;
 
         String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
 
-        // Build a map of previous counters and last_* timestamps, keyed by index name.
         Map<String,Object> prevMap = new HashMap<>();
         if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
           for (def b : ctx.payload.prev.aggregations.by_index.buckets) {
@@ -117,7 +107,6 @@ PUT _watcher/watch/admin_index_usage_every_5m
           }
         }
 
-        // Build the allowed set of indices (skip system ones unless includeSystem=true).
         Set<String> allowed = new HashSet<>();
         for (def row : ctx.payload.list) {
           def name = row.index;
@@ -144,14 +133,13 @@ PUT _watcher/watch/admin_index_usage_every_5m
           long cSearch = (tot?.search?.query_total       != null ? tot.search.query_total       : 0L);
           long cGet    = (tot?.get?.total                != null ? tot.get.total                : 0L);
 
-          // created_at from settings (ms -> ISO8601)
           String createdAt = null;
           def cnode = creations[idx];
           if (cnode != null && cnode.settings != null && cnode.settings.index != null && cnode.settings.index.creation_date != null) {
             try {
               long ms = Long.parseLong(cnode.settings.index.creation_date.toString());
               createdAt = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toString();
-            } catch (Exception e) { /* ignore parse issues */ }
+            } catch (Exception e) { }
           }
 
           def prev = prevMap.get(idx);
@@ -168,22 +156,17 @@ PUT _watcher/watch/admin_index_usage_every_5m
             long pSea = (prev.search_query_total instanceof Number ? ((Number)prev.search_query_total).longValue() : 0L);
             long pGet = (prev.get_total          instanceof Number ? ((Number)prev.get_total).longValue()          : 0L);
 
-            // Counter reset: any current counter < previous => likely restart/relocation/rollover.
             isReset = (cIndex < pIdx) || (cDelete < pDel) || (cSearch < pSea) || (cGet < pGet);
 
             if (!isReset) {
-              // WRITE: any increase in index_total or delete_total.
               if (cIndex > pIdx || cDelete > pDel) {
                 lastWrite = now;
               }
-              // READ: any increase in search.query_total or get.total.
               if (cSearch > pSea || cGet > pGet) {
                 lastRead = now;
               }
             }
-            // On reset: keep last_* unchanged (retain last known dates), only re-seed counters.
           }
-          // On first run: leave last_* as null (do not set).
 
           Map doc = new HashMap();
           doc.put("index", idx);
@@ -213,10 +196,8 @@ PUT _watcher/watch/admin_index_usage_every_5m
       """
     }
   },
-
   "actions": {
     "upsert_each_index": {
-      # One doc per ES index; doc_id = index name for idempotent upsert-like behavior.
       "foreach": "ctx.payload.docs",
       "max_iterations": 20000,
       "index": {
@@ -227,7 +208,6 @@ PUT _watcher/watch/admin_index_usage_every_5m
       }
     },
     "optional_raw_history": {
-      # Enable by setting alsoIndexRaw=true in the transform.
       "condition": { "script": "return ctx.payload.rawDocs != null && !ctx.payload.rawDocs.isEmpty();" },
       "foreach": "ctx.payload.rawDocs",
       "index": {
@@ -239,10 +219,8 @@ PUT _watcher/watch/admin_index_usage_every_5m
       "logging": { "text": "admin-index-usage: upserted {{ctx.payload.docs.size()}} docs" }
     }
   },
-
   "metadata": {
     "description": "Every 5 min snapshot of index metrics with heuristic last_read/last_write, first-run nulls, and counter-reset protection."
   },
-
   "throttle_period": "0s"
 }
