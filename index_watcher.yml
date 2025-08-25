@@ -8,7 +8,7 @@ PUT _watcher/watch/admin_index_usage_every_5m
           "prev": {
             "search": {
               "request": {
-                "indices": [ "admin-index-usage" ],
+                "indices": ["admin-index-usage"],
                 "body": {
                   "size": 0,
                   "aggs": {
@@ -89,7 +89,7 @@ PUT _watcher/watch/admin_index_usage_every_5m
         boolean includeSystem = false;
         boolean alsoIndexRaw  = false;
 
-        String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
+        String now = ctx.trigger.triggered_time.toInstant().toString();
 
         def prevMap = new HashMap();
         if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
@@ -107,15 +107,22 @@ PUT _watcher/watch/admin_index_usage_every_5m
           }
         }
 
+        def listRoot = (ctx.payload.list != null && ctx.payload.list.body != null) ? ctx.payload.list.body : ctx.payload.list;
+        if (listRoot == null) { listRoot = new ArrayList(); }
+
         def allowed = new HashSet();
-        for (def row : ctx.payload.list) {
+        for (def row : listRoot) {
           def name = row.index;
+          if (name == null) { continue; }
           if (!includeSystem && name.startsWith(".")) { continue; }
           allowed.add(name);
         }
 
-        def stats = ctx.payload.stats.indices;
-        def creations = ctx.payload.creations;
+        def statsRoot = (ctx.payload.stats != null && ctx.payload.stats.body != null) ? ctx.payload.stats.body : ctx.payload.stats;
+        def stats = (statsRoot != null && statsRoot.indices != null) ? statsRoot.indices : new HashMap();
+
+        def creations = (ctx.payload.creations != null && ctx.payload.creations.body != null) ? ctx.payload.creations.body : ctx.payload.creations;
+        if (creations == null) { creations = new HashMap(); }
 
         def docs = new ArrayList();
         def rawDocs = new ArrayList();
@@ -126,8 +133,8 @@ PUT _watcher/watch/admin_index_usage_every_5m
 
           def tot = entry.getValue().total;
 
-          long sizeB   = (tot != null && tot.store != null && tot.store.size_in_bytes != null ? tot.store.size_in_bytes : 0L);
-          long docsCnt = (tot != null && tot.docs  != null && tot.docs.count         != null ? tot.docs.count         : 0L);
+          long sizeB   = (tot != null && tot.store  != null && tot.store.size_in_bytes   != null ? tot.store.size_in_bytes   : 0L);
+          long docsCnt = (tot != null && tot.docs   != null && tot.docs.count            != null ? tot.docs.count            : 0L);
           long cIndex  = (tot != null && tot.indexing != null && tot.indexing.index_total  != null ? tot.indexing.index_total  : 0L);
           long cDelete = (tot != null && tot.indexing != null && tot.indexing.delete_total != null ? tot.indexing.delete_total : 0L);
           long cSearch = (tot != null && tot.search   != null && tot.search.query_total    != null ? tot.search.query_total    : 0L);
@@ -138,7 +145,7 @@ PUT _watcher/watch/admin_index_usage_every_5m
           if (cnode != null && cnode.settings != null && cnode.settings.index != null && cnode.settings.index.creation_date != null) {
             try {
               long ms = Long.parseLong(cnode.settings.index.creation_date.toString());
-              createdAt = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toString();
+              createdAt = Instant.ofEpochMilli(ms).toString();
             } catch (Exception e) { }
           }
 
@@ -159,12 +166,8 @@ PUT _watcher/watch/admin_index_usage_every_5m
             isReset = (cIndex < pIdx) || (cDelete < pDel) || (cSearch < pSea) || (cGet < pGet);
 
             if (!isReset) {
-              if (cIndex > pIdx || cDelete > pDel) {
-                lastWrite = now;
-              }
-              if (cSearch > pSea || cGet > pGet) {
-                lastRead = now;
-              }
+              if (cIndex > pIdx || cDelete > pDel) { lastWrite = now; }
+              if (cSearch > pSea || cGet > pGet)   { lastRead  = now; }
             }
           }
 
