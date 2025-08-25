@@ -2,35 +2,18 @@
 set -euo pipefail
 
 # NFS repair / SSH tunnel helper for RHEL 8.10
-# - Server side:
-#   * Ensure AllowTcpForwarding yes in /etc/ssh/sshd_config (backup + validate)
-#   * exportfs -ra
-#   * systemctl restart sshd
-#   * verify NFS is listening on 2049 and nfsd processes exist
-# - Client side (over SSH):
-#   * (optional) rm -rf /16t_elkbackup/*  (only if actually mounted as nfs*)
-#   * systemctl restart autossh-nfs-tunnel
-#   * mount -vvv -t nfs4 -o port=3335,proto=tcp localhost:/elkbackup /16t_elkbackup
-#   * ls -lt /16t_elkbackup
-#
-# Usage examples:
-#   sudo ./backupFix.sh --server
-#   ./backupFix.sh --clients --hosts-file ./es_nodes.txt
-#   sudo ./backupFix.sh --server --clients --hosts-list "es1,es2,es3"
-#
-# Flags:
-#   --rm            : attempt to rm -rf /16t_elkbackup/* on clients if mounted as nfs*
-#   --no-rm         : skip removal even if mounted (default: auto = only if mounted)
-#   --hosts-file    : path to file with hosts (one per line; comments allowed)
-#   --hosts-list    : comma-separated list of hosts
-#   --user <name>   : SSH user for clients (default: current user)
-#   --ssh-key <p>   : SSH key path (default: ssh-agent/default)
-#   --dry-run       : print actions only
-#   --verbose       : extra logs
+# Server:
+#   - Ensure AllowTcpForwarding yes, validate, restart sshd
+#   - exportfs -ra, verify NFS (2049 + nfsd processes)
+# Clients:
+#   - rm -rf /16t_elkbackup/*   (DOMYŚLNIE ZAWSZE)
+#   - restart autossh-nfs-tunnel
+#   - mount -vvv -t nfs4 -o port=3335,proto=tcp localhost:/elkbackup /16t_elkbackup
+#   - ls -lt /16t_elkbackup
 
 SERVER=false
 CLIENTS=false
-DO_RM="auto"   # auto|yes|no
+DO_RM="yes"          # yes|no   (domyślnie czyść zawsze – zgodnie z pkt 1)
 HOSTS_FILE=""
 HOSTS_LIST=""
 SSH_USER="${USER:-}"
@@ -38,9 +21,9 @@ SSH_KEY=""
 DRY_RUN=false
 VERBOSE=false
 
-log() { echo "[*] $*"; }
+log()  { echo "[*] $*"; }
 warn() { echo "[!] $*" >&2; }
-die() { echo "[x] $*" >&2; exit 1; }
+die()  { echo "[x] $*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
@@ -80,15 +63,12 @@ ssh_base_opts=(
   -o BatchMode=yes
 )
 
-# For single short commands (no heredoc)
 ssh_cmd() {
   local host="$1"; shift
   local user_host="$host"
   [[ -n "$SSH_USER" ]] && user_host="$SSH_USER@$host"
-
   local args=("${ssh_base_opts[@]}")
   [[ -n "$SSH_KEY" ]] && args+=("-i" "$SSH_KEY")
-
   if $DRY_RUN; then
     echo "DRY-RUN: ssh ${args[*]} $user_host $*"
   else
@@ -99,8 +79,7 @@ ssh_cmd() {
 backup_file() {
   local f="$1"
   if [[ -f "$f" ]]; then
-    local ts
-    ts="$(date +%Y%m%d-%H%M%S)"
+    local ts; ts="$(date +%Y%m%d-%H%M%S)"
     maybe_run "cp -a '$f' '${f}.bak-${ts}'"
   fi
 }
@@ -108,7 +87,6 @@ backup_file() {
 ensure_allow_tcp_forwarding_yes() {
   local cfg="/etc/ssh/sshd_config"
   [[ -r "$cfg" ]] || die "Cannot read $cfg (need root?)"
-
   backup_file "$cfg"
 
   if grep -qiE '^\s*AllowTcpForwarding\b' "$cfg"; then
@@ -120,9 +98,7 @@ ensure_allow_tcp_forwarding_yes() {
   if $DRY_RUN; then
     log "Would validate sshd config with: sshd -t"
   else
-    if ! sshd -t; then
-      die "sshd configuration validation failed after editing $cfg."
-    fi
+    sshd -t || die "sshd configuration validation failed after editing $cfg."
   fi
 
   maybe_run "systemctl restart sshd"
@@ -132,14 +108,12 @@ ensure_allow_tcp_forwarding_yes() {
 
 server_refresh_nfs() {
   maybe_run "exportfs -ra" || warn "exportfs -ra failed or not installed"
-
   if command -v ss >/dev/null 2>&1; then
     maybe_run "ss -tulpn | grep -E '[:.]2049\\s' || true"
   else
     need_cmd netstat
     maybe_run "netstat -tulpn | grep 2049 || true"
   fi
-
   maybe_run "ps aux | grep -E 'nfsd|nfsdcld' | grep -v grep || true"
 }
 
@@ -167,7 +141,7 @@ clients_run_all() {
     [[ -n "$SSH_KEY" ]] && args+=("-i" "$SSH_KEY")
 
     if $DRY_RUN; then
-      echo "DRY-RUN: ssh ${args[*]} $user_host 'bash -s' < <remote-script>"
+      echo "DRY-RUN: ssh ${args[*]} $user_host 'bash -s' <<'EOF' ... EOF"
       continue
     fi
 
@@ -176,48 +150,53 @@ set -euo pipefail
 log(){ echo "[*] CLIENT: $*"; }
 warn(){ echo "[!] CLIENT: $*" >&2; }
 
-DO_RM="${DO_RM_VAL:-auto}"
+DO_RM="${DO_RM_VAL:-yes}"
 
-client_rm_if_mounted(){
-  local mp="/16t_elkbackup"
-  local mtype
-  mtype="$(findmnt -n -o FSTYPE --target "$mp" 2>/dev/null || true)"
-  if [[ "$DO_RM" == "no" ]]; then
-    log "Skipping rm on $mp (--no-rm)."; return 0
-  fi
-  if [[ -z "$mtype" ]]; then
-    if [[ "$DO_RM" == "yes" ]]; then
-      warn "$mp is not mounted; --rm requested but skipping for safety."
-    else
-      log "$mp is not mounted; skip rm."
-    fi
-    return 0
-  fi
-  if [[ "$mtype" =~ ^nfs ]]; then
-    log "Cleaning $mp/* (mounted as $mtype)."
-    rm -rf --one-file-system ${mp}/* || true
+is_root() { [ "$(id -u)" -eq 0 ]; }
+as_root() {
+  if is_root; then
+    "$@"
   else
-    warn "$mp is mounted as $mtype, not nfs*. Skipping rm."
+    # bez interakcji: wymagane NOPASSWD w sudoers
+    sudo -n "$@" || { echo "[x] Need root or passwordless sudo for: $*"; exit 101; }
   fi
 }
 
+client_rm_local(){
+  if [[ "$DO_RM" == "no" ]]; then
+    log "Skipping rm (--no-rm)."; return 0
+  fi
+  local mp="/16t_elkbackup"
+  # Dodatkowe bezpieczniki: istnieje i nie jest '/'
+  if [[ "$mp" == "/" || "$mp" == "" ]]; then
+    echo "[x] Refusing to remove from '$mp'"; exit 102
+  fi
+  as_root bash -c 'shopt -s dotglob nullglob; rm -rf --one-file-system /16t_elkbackup/*'
+  log "Cleaned $mp/*"
+}
+
 client_restart_tunnel(){
-  systemctl restart autossh-nfs-tunnel || true
-  systemctl is-active --quiet autossh-nfs-tunnel || systemctl status --no-pager autossh-nfs-tunnel || true
+  as_root systemctl restart autossh-nfs-tunnel || true
+  if ! as_root systemctl is-active --quiet autossh-nfs-tunnel; then
+    warn "autossh-nfs-tunnel not active; showing status:"
+    as_root systemctl status --no-pager autossh-nfs-tunnel || true
+  fi
 }
 
 client_mount_nfs(){
   local mp="/16t_elkbackup"
   local src="localhost:/elkbackup"
   local opts="port=3335,proto=tcp"
-  mkdir -p "$mp"
+  as_root mkdir -p "$mp"
+
+  # jeśli już NFS z właściwego źródła — pomijamy mount
   local cur_src
-  cur_src="$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null || true)"
-  if [[ "$cur_src" == "$src" ]]; then
+  cur_src="$(findmnt -n -o SOURCE,FSTYPE --target "$mp" 2>/dev/null | awk '{print $1" "$2}' || true)"
+  if [[ "$cur_src" == "$src nfs" || "$cur_src" == "$src nfs4" ]]; then
     log "$mp already mounted from $src"
   else
     log "Mounting $src -> $mp"
-    mount -vvv -t nfs4 -o "$opts" "$src" "$mp"
+    as_root mount -vvv -t nfs4 -o "$opts" "$src" "$mp"
   fi
 
   ls -lt "$mp" || true
@@ -228,7 +207,7 @@ client_mount_nfs(){
   fi
 }
 
-client_rm_if_mounted
+client_rm_local
 client_restart_tunnel
 client_mount_nfs
 EOF
