@@ -5,9 +5,7 @@
         "type": "script_exception",
         "reason": "compile error",
         "script_stack": [
-          """... ng();
-
-        Map<String,Object> prevMap = new Ha ...""",
+          "... tring now = ZonedDateTime.now(ZoneOffset.UTC).toSt ...",
           "                             ^---- HERE"
         ],
         "script": """
@@ -16,47 +14,47 @@
 
         String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
 
-        Map<String,Object> prevMap = new HashMap<>();
+        def prevMap = new HashMap();
         if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
           for (def b : ctx.payload.prev.aggregations.by_index.buckets) {
             def hit = b.latest.hits.hits[0];
             def src = hit._source;
             prevMap.put(src.index, [
-              "index_total":        (src.counters?.index_total        != null ? src.counters.index_total        : 0L),
-              "delete_total":       (src.counters?.delete_total       != null ? src.counters.delete_total       : 0L),
-              "search_query_total": (src.counters?.search_query_total != null ? src.counters.search_query_total : 0L),
-              "get_total":          (src.counters?.get_total          != null ? src.counters.get_total          : 0L),
+              "index_total":        (src.counters != null && src.counters.index_total        != null ? src.counters.index_total        : 0L),
+              "delete_total":       (src.counters != null && src.counters.delete_total       != null ? src.counters.delete_total       : 0L),
+              "search_query_total": (src.counters != null && src.counters.search_query_total != null ? src.counters.search_query_total : 0L),
+              "get_total":          (src.counters != null && src.counters.get_total          != null ? src.counters.get_total          : 0L),
               "last_write_at":       src.last_write_at,
               "last_read_at":        src.last_read_at
             ]);
           }
         }
 
-        Set<String> allowed = new HashSet<>();
+        def allowed = new HashSet();
         for (def row : ctx.payload.list) {
           def name = row.index;
-          if (!includeSystem && name.startsWith(".")) continue;
+          if (!includeSystem && name.startsWith(".")) { continue; }
           allowed.add(name);
         }
 
         def stats = ctx.payload.stats.indices;
         def creations = ctx.payload.creations;
 
-        List docs = new ArrayList();
-        List rawDocs = new ArrayList();
+        def docs = new ArrayList();
+        def rawDocs = new ArrayList();
 
         for (def entry : stats.entrySet()) {
           String idx = entry.getKey();
-          if (!allowed.contains(idx)) continue;
+          if (!allowed.contains(idx)) { continue; }
 
           def tot = entry.getValue().total;
 
-          long sizeB   = (tot?.store?.size_in_bytes      != null ? tot.store.size_in_bytes      : 0L);
-          long docsCnt = (tot?.docs?.count               != null ? tot.docs.count               : 0L);
-          long cIndex  = (tot?.indexing?.index_total     != null ? tot.indexing.index_total     : 0L);
-          long cDelete = (tot?.indexing?.delete_total    != null ? tot.indexing.delete_total    : 0L);
-          long cSearch = (tot?.search?.query_total       != null ? tot.search.query_total       : 0L);
-          long cGet    = (tot?.get?.total                != null ? tot.get.total                : 0L);
+          long sizeB   = (tot != null && tot.store != null && tot.store.size_in_bytes != null ? tot.store.size_in_bytes : 0L);
+          long docsCnt = (tot != null && tot.docs  != null && tot.docs.count         != null ? tot.docs.count         : 0L);
+          long cIndex  = (tot != null && tot.indexing != null && tot.indexing.index_total  != null ? tot.indexing.index_total  : 0L);
+          long cDelete = (tot != null && tot.indexing != null && tot.indexing.delete_total != null ? tot.indexing.delete_total : 0L);
+          long cSearch = (tot != null && tot.search   != null && tot.search.query_total    != null ? tot.search.query_total    : 0L);
+          long cGet    = (tot != null && tot.get      != null && tot.get.total             != null ? tot.get.total             : 0L);
 
           String createdAt = null;
           def cnode = creations[idx];
@@ -69,8 +67,8 @@
 
           def prev = prevMap.get(idx);
 
-          String lastWrite = prev != null ? (String)prev.last_write_at : null;
-          String lastRead  = prev != null ? (String)prev.last_read_at  : null;
+          String lastWrite = (prev != null ? (String)prev.last_write_at : null);
+          String lastRead  = (prev != null ? (String)prev.last_read_at  : null);
 
           boolean isFirst = (prev == null);
           boolean isReset = false;
@@ -93,7 +91,7 @@
             }
           }
 
-          Map doc = new HashMap();
+          def doc = new HashMap();
           doc.put("index", idx);
           doc.put("size_bytes", sizeB);
           doc.put("docs_count", docsCnt);
@@ -121,18 +119,16 @@
       """,
         "lang": "painless",
         "position": {
-          "offset": 166,
-          "start": 141,
-          "end": 191
+          "offset": 114,
+          "start": 89,
+          "end": 139
         }
       }
     ],
     "type": "script_exception",
     "reason": "compile error",
     "script_stack": [
-      """... ng();
-
-        Map<String,Object> prevMap = new Ha ...""",
+      "... tring now = ZonedDateTime.now(ZoneOffset.UTC).toSt ...",
       "                             ^---- HERE"
     ],
     "script": """
@@ -141,47 +137,47 @@
 
         String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
 
-        Map<String,Object> prevMap = new HashMap<>();
+        def prevMap = new HashMap();
         if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
           for (def b : ctx.payload.prev.aggregations.by_index.buckets) {
             def hit = b.latest.hits.hits[0];
             def src = hit._source;
             prevMap.put(src.index, [
-              "index_total":        (src.counters?.index_total        != null ? src.counters.index_total        : 0L),
-              "delete_total":       (src.counters?.delete_total       != null ? src.counters.delete_total       : 0L),
-              "search_query_total": (src.counters?.search_query_total != null ? src.counters.search_query_total : 0L),
-              "get_total":          (src.counters?.get_total          != null ? src.counters.get_total          : 0L),
+              "index_total":        (src.counters != null && src.counters.index_total        != null ? src.counters.index_total        : 0L),
+              "delete_total":       (src.counters != null && src.counters.delete_total       != null ? src.counters.delete_total       : 0L),
+              "search_query_total": (src.counters != null && src.counters.search_query_total != null ? src.counters.search_query_total : 0L),
+              "get_total":          (src.counters != null && src.counters.get_total          != null ? src.counters.get_total          : 0L),
               "last_write_at":       src.last_write_at,
               "last_read_at":        src.last_read_at
             ]);
           }
         }
 
-        Set<String> allowed = new HashSet<>();
+        def allowed = new HashSet();
         for (def row : ctx.payload.list) {
           def name = row.index;
-          if (!includeSystem && name.startsWith(".")) continue;
+          if (!includeSystem && name.startsWith(".")) { continue; }
           allowed.add(name);
         }
 
         def stats = ctx.payload.stats.indices;
         def creations = ctx.payload.creations;
 
-        List docs = new ArrayList();
-        List rawDocs = new ArrayList();
+        def docs = new ArrayList();
+        def rawDocs = new ArrayList();
 
         for (def entry : stats.entrySet()) {
           String idx = entry.getKey();
-          if (!allowed.contains(idx)) continue;
+          if (!allowed.contains(idx)) { continue; }
 
           def tot = entry.getValue().total;
 
-          long sizeB   = (tot?.store?.size_in_bytes      != null ? tot.store.size_in_bytes      : 0L);
-          long docsCnt = (tot?.docs?.count               != null ? tot.docs.count               : 0L);
-          long cIndex  = (tot?.indexing?.index_total     != null ? tot.indexing.index_total     : 0L);
-          long cDelete = (tot?.indexing?.delete_total    != null ? tot.indexing.delete_total    : 0L);
-          long cSearch = (tot?.search?.query_total       != null ? tot.search.query_total       : 0L);
-          long cGet    = (tot?.get?.total                != null ? tot.get.total                : 0L);
+          long sizeB   = (tot != null && tot.store != null && tot.store.size_in_bytes != null ? tot.store.size_in_bytes : 0L);
+          long docsCnt = (tot != null && tot.docs  != null && tot.docs.count         != null ? tot.docs.count         : 0L);
+          long cIndex  = (tot != null && tot.indexing != null && tot.indexing.index_total  != null ? tot.indexing.index_total  : 0L);
+          long cDelete = (tot != null && tot.indexing != null && tot.indexing.delete_total != null ? tot.indexing.delete_total : 0L);
+          long cSearch = (tot != null && tot.search   != null && tot.search.query_total    != null ? tot.search.query_total    : 0L);
+          long cGet    = (tot != null && tot.get      != null && tot.get.total             != null ? tot.get.total             : 0L);
 
           String createdAt = null;
           def cnode = creations[idx];
@@ -194,8 +190,8 @@
 
           def prev = prevMap.get(idx);
 
-          String lastWrite = prev != null ? (String)prev.last_write_at : null;
-          String lastRead  = prev != null ? (String)prev.last_read_at  : null;
+          String lastWrite = (prev != null ? (String)prev.last_write_at : null);
+          String lastRead  = (prev != null ? (String)prev.last_read_at  : null);
 
           boolean isFirst = (prev == null);
           boolean isReset = false;
@@ -218,7 +214,7 @@
             }
           }
 
-          Map doc = new HashMap();
+          def doc = new HashMap();
           doc.put("index", idx);
           doc.put("size_bytes", sizeB);
           doc.put("docs_count", docsCnt);
@@ -246,13 +242,13 @@
       """,
     "lang": "painless",
     "position": {
-      "offset": 166,
-      "start": 141,
-      "end": 191
+      "offset": 114,
+      "start": 89,
+      "end": 139
     },
     "caused_by": {
       "type": "illegal_argument_exception",
-      "reason": "unexpected token [','] was expecting one of [{<EOF>, ';'}]."
+      "reason": "static method [java.time.ZonedDateTime, now/1] not found"
     }
   },
   "status": 400
