@@ -1,4 +1,9 @@
-[m024742-udm@ap-fanves20t ~]$ ./backupFix.sh --clients --hosts-list ap-fanves20t
-[*] === CLIENT tasks ===
-[*] === CLIENT: ap-fanves20t ===
-./backupFix.sh: eval: line 66: syntax error near unexpected token `('
+[!] CLIENT: /16t_elkbackup is mounted as xfs, not nfs*. Skipping rm.
+Failed to restart autossh-nfs-tunnel.service: Interactive authentication required.
+See system logs and 'systemctl status autossh-nfs-tunnel.service' for details.
+● autossh-nfs-tunnel.service - AutoSSH tunnels nfs on local port 3335 to remote 2049
+   Loaded: loaded (/etc/systemd/system/autossh-nfs-tunnel.service; enabled; vendor preset: disabled)
+   Active: failed (Result: exit-code) since Tue 2025-08-05 09:07:41 CEST; 2 weeks 6 days ago
+ Main PID: 1315 (code=exited, status=217/USER)
+[*] CLIENT: Mounting localhost:/elkbackup -> /16t_elkbackup
+mount: only root can use "--options" option
