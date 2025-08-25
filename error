@@ -1,36 +1,4 @@
-
-============================
->>> ap-fanves21t
-============================
-[1] Checking swap status...
-  Swap is already disabled.
-[2] Checking vm.max_map_count...
-  vm.max_map_count = 262144
-[3] Ensuring systemd limits and restart policy...
-[4] Ensuring JVM heap size...
-[5] Checking Transparent Huge Pages (THP)...
-  THP already disabled.
-[6] Ensuring bootstrap.memory_lock...
-[7] Ensuring network sysctl...
-  OK: net.core.somaxconn = 4096
-  OK: net.core.netdev_max_backlog = 16384
-  OK: net.ipv4.tcp_max_syn_backlog = 8192
-  OK: net.ipv4.tcp_fin_timeout = 30
-  OK: net.ipv4.tcp_tw_reuse = 1
-  OK: net.ipv4.ip_local_port_range = 1024 65000
-[8] Restarting Elasticsearch...
-Restart=on-failure
-RestartUSec=5s
-TimeoutStopUSec=5min
-TasksMax=infinity
-LimitNOFILE=1048576
-LimitNPROC=64000
-KillSignal=15
-  Runtime /proc limits for PID 3596358:
-Max processes             64000                64000                processes
-Max open files            1048576              1048576              files
-Max locked memory         unlimited            unlimited            bytes
-  JVM heap flags:
-/usr/share/elasticsearch/jdk/bin/java -Xms4m -Xmx64m -XX:+UseSerialGC -Dcli.name=server -Dcli.script=/usr/share/elasticsearch/bin/elasticsearch -Dcli.libs=lib/tools/server-cli -Des.path.home=/usr/share/elasticsearch -Des.path.conf=/etc/elasticsearch -Des.distribution.type=rpm -cp /usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/lib/cli-launcher/* org.elasticsearch.launcher.CliToolLauncher -p /var/run/elasticsearch/elasticsearch.pid --quiet
-
-All done.
+[m024742-udm@ap-fanves20t ~]$ ./backupFix.sh --clients --hosts-list ap-fanves20t
+[*] === CLIENT tasks ===
+[*] === CLIENT: ap-fanves20t ===
+./backupFix.sh: eval: line 66: syntax error near unexpected token `('
