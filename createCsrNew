@@ -1,0 +1,92 @@
+#!/bin/bash
+# execution by
+# sh createCSR_light.sh DEV/VALIDATION/TEST ********** '*********' "https://artifactory.itcm.oneadr.net/cdp-tenant/fciait/elk"
+# please put password in single quotes like
+# sh createCSR_light.sh TEST SVC10525 '**********' "https://artifactory.itcm.oneadr.net/cdp-tenant/fciait/elk"
+
+set -euo pipefail
+umask 077
+
+# Check if args are provided
+if [ "$#" -lt 4 ]; then
+  echo "Usage: $0 enviornment usernameArtifactory passwordArtifactory urlArtifactory"
+  exit 1
+fi
+
+enviornment=$1
+usernameArtifactory=$2
+passwordArtifactory=$3
+urlArtifactory=$4
+
+create_csr_and_key() {
+  local longname="$1"
+  local shortname="$2"
+  local enviornment="$3"
+  local usernameArtifactory="$4"
+  local passwordArtifactory="$5"
+  local urlArtifactory="$6"
+
+  echo "Preparing OpenSSL config for ${shortname} (${longname})"
+
+  cat <<EOF > ssl_config
+[req]
+default_bits = 4096
+prompt = no
+default_md = sha256
+req_extensions = req_ext
+distinguished_name = dn
+
+[ dn ]
+C=FI
+ST=Helsinki
+L=Helsinki
+O=Nordea Bank Abp
+OU=Nordea IT
+CN=${longname}
+
+[ req_ext ]
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = ${longname}
+DNS.2 = ${shortname}
+EOF
+
+  # Generate key and CSR locally
+  openssl genrsa -out "${shortname}.key" 4096
+  chmod 600 "${shortname}.key"
+
+  openssl req -config ssl_config -new -key "${shortname}.key" -out "${shortname}.csr"
+
+  echo "CSR file: ${shortname}.csr"
+  curl -sS -f -X PUT -u "${usernameArtifactory}:${passwordArtifactory}" \
+    -T "${shortname}.csr" \
+    "${urlArtifactory}/csrFiles/${enviornment}/${shortname}.csr"
+  echo "Uploaded CSR to Artifactory: csrFiles/${enviornment}/${shortname}.csr"
+
+  echo "Key file: ${shortname}.key"
+  curl -sS -f -X PUT -u "${usernameArtifactory}:${passwordArtifactory}" \
+    -T "${shortname}.key" \
+    "${urlArtifactory}/keyFiles/${enviornment}/${shortname}.key"
+  echo "Uploaded key to Artifactory: keyFiles/${enviornment}/${shortname}.key"
+}
+
+# Iterate over servers list and process locally (no SSH)
+list_file="server_list_${enviornment}"
+if [ ! -f "${list_file}" ]; then
+  echo "Server list file not found: ${list_file}"
+  exit 1
+fi
+
+while read -r server || [ -n "${server:-}" ]; do
+  # skip empty/comment lines
+  [[ -z "${server}" || "${server}" =~ ^# ]] && continue
+  echo "Executing locally for ${server}"
+  create_csr_and_key "${server}.oneadr.net" "${server}" "${enviornment}" \
+                     "${usernameArtifactory}" "${passwordArtifactory}" "${urlArtifactory}"
+done < "${list_file}"
+
+echo "All done."
