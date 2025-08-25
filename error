@@ -2,18 +2,257 @@
   "error": {
     "root_cause": [
       {
-        "type": "x_content_parse_exception",
-        "reason": """[1:135] Unexpected character ('#' (code 35)): was expecting double-quote to start field name
- at [Source: (org.elasticsearch.common.bytes.ReleasableBytesReference$1); line: 1, column: 135]"""
+        "type": "script_exception",
+        "reason": "compile error",
+        "script_stack": [
+          """... ng();
+
+        Map<String,Object> prevMap = new Ha ...""",
+          "                             ^---- HERE"
+        ],
+        "script": """
+        boolean includeSystem = false;
+        boolean alsoIndexRaw  = false;
+
+        String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
+
+        Map<String,Object> prevMap = new HashMap<>();
+        if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
+          for (def b : ctx.payload.prev.aggregations.by_index.buckets) {
+            def hit = b.latest.hits.hits[0];
+            def src = hit._source;
+            prevMap.put(src.index, [
+              "index_total":        (src.counters?.index_total        != null ? src.counters.index_total        : 0L),
+              "delete_total":       (src.counters?.delete_total       != null ? src.counters.delete_total       : 0L),
+              "search_query_total": (src.counters?.search_query_total != null ? src.counters.search_query_total : 0L),
+              "get_total":          (src.counters?.get_total          != null ? src.counters.get_total          : 0L),
+              "last_write_at":       src.last_write_at,
+              "last_read_at":        src.last_read_at
+            ]);
+          }
+        }
+
+        Set<String> allowed = new HashSet<>();
+        for (def row : ctx.payload.list) {
+          def name = row.index;
+          if (!includeSystem && name.startsWith(".")) continue;
+          allowed.add(name);
+        }
+
+        def stats = ctx.payload.stats.indices;
+        def creations = ctx.payload.creations;
+
+        List docs = new ArrayList();
+        List rawDocs = new ArrayList();
+
+        for (def entry : stats.entrySet()) {
+          String idx = entry.getKey();
+          if (!allowed.contains(idx)) continue;
+
+          def tot = entry.getValue().total;
+
+          long sizeB   = (tot?.store?.size_in_bytes      != null ? tot.store.size_in_bytes      : 0L);
+          long docsCnt = (tot?.docs?.count               != null ? tot.docs.count               : 0L);
+          long cIndex  = (tot?.indexing?.index_total     != null ? tot.indexing.index_total     : 0L);
+          long cDelete = (tot?.indexing?.delete_total    != null ? tot.indexing.delete_total    : 0L);
+          long cSearch = (tot?.search?.query_total       != null ? tot.search.query_total       : 0L);
+          long cGet    = (tot?.get?.total                != null ? tot.get.total                : 0L);
+
+          String createdAt = null;
+          def cnode = creations[idx];
+          if (cnode != null && cnode.settings != null && cnode.settings.index != null && cnode.settings.index.creation_date != null) {
+            try {
+              long ms = Long.parseLong(cnode.settings.index.creation_date.toString());
+              createdAt = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toString();
+            } catch (Exception e) { }
+          }
+
+          def prev = prevMap.get(idx);
+
+          String lastWrite = prev != null ? (String)prev.last_write_at : null;
+          String lastRead  = prev != null ? (String)prev.last_read_at  : null;
+
+          boolean isFirst = (prev == null);
+          boolean isReset = false;
+
+          if (!isFirst) {
+            long pIdx = (prev.index_total        instanceof Number ? ((Number)prev.index_total).longValue()        : 0L);
+            long pDel = (prev.delete_total       instanceof Number ? ((Number)prev.delete_total).longValue()       : 0L);
+            long pSea = (prev.search_query_total instanceof Number ? ((Number)prev.search_query_total).longValue() : 0L);
+            long pGet = (prev.get_total          instanceof Number ? ((Number)prev.get_total).longValue()          : 0L);
+
+            isReset = (cIndex < pIdx) || (cDelete < pDel) || (cSearch < pSea) || (cGet < pGet);
+
+            if (!isReset) {
+              if (cIndex > pIdx || cDelete > pDel) {
+                lastWrite = now;
+              }
+              if (cSearch > pSea || cGet > pGet) {
+                lastRead = now;
+              }
+            }
+          }
+
+          Map doc = new HashMap();
+          doc.put("index", idx);
+          doc.put("size_bytes", sizeB);
+          doc.put("docs_count", docsCnt);
+          doc.put("created_at", createdAt);
+          doc.put("last_write_at", lastWrite);
+          doc.put("last_read_at",  lastRead);
+          doc.put("updated_at", now);
+          doc.put("counters", [
+            "index_total":        cIndex,
+            "delete_total":       cDelete,
+            "search_query_total": cSearch,
+            "get_total":          cGet
+          ]);
+
+          docs.add(doc);
+
+          if (alsoIndexRaw) {
+            def raw = new HashMap(doc);
+            raw.put("@timestamp", now);
+            rawDocs.add(raw);
+          }
+        }
+
+        return ["docs": docs, "rawDocs": rawDocs];
+      """,
+        "lang": "painless",
+        "position": {
+          "offset": 166,
+          "start": 141,
+          "end": 191
+        }
       }
     ],
-    "type": "x_content_parse_exception",
-    "reason": """[1:135] Unexpected character ('#' (code 35)): was expecting double-quote to start field name
- at [Source: (org.elasticsearch.common.bytes.ReleasableBytesReference$1); line: 1, column: 135]""",
+    "type": "script_exception",
+    "reason": "compile error",
+    "script_stack": [
+      """... ng();
+
+        Map<String,Object> prevMap = new Ha ...""",
+      "                             ^---- HERE"
+    ],
+    "script": """
+        boolean includeSystem = false;
+        boolean alsoIndexRaw  = false;
+
+        String now = ZonedDateTime.now(ZoneOffset.UTC).toString();
+
+        Map<String,Object> prevMap = new HashMap<>();
+        if (ctx.payload.prev != null && ctx.payload.prev.aggregations != null) {
+          for (def b : ctx.payload.prev.aggregations.by_index.buckets) {
+            def hit = b.latest.hits.hits[0];
+            def src = hit._source;
+            prevMap.put(src.index, [
+              "index_total":        (src.counters?.index_total        != null ? src.counters.index_total        : 0L),
+              "delete_total":       (src.counters?.delete_total       != null ? src.counters.delete_total       : 0L),
+              "search_query_total": (src.counters?.search_query_total != null ? src.counters.search_query_total : 0L),
+              "get_total":          (src.counters?.get_total          != null ? src.counters.get_total          : 0L),
+              "last_write_at":       src.last_write_at,
+              "last_read_at":        src.last_read_at
+            ]);
+          }
+        }
+
+        Set<String> allowed = new HashSet<>();
+        for (def row : ctx.payload.list) {
+          def name = row.index;
+          if (!includeSystem && name.startsWith(".")) continue;
+          allowed.add(name);
+        }
+
+        def stats = ctx.payload.stats.indices;
+        def creations = ctx.payload.creations;
+
+        List docs = new ArrayList();
+        List rawDocs = new ArrayList();
+
+        for (def entry : stats.entrySet()) {
+          String idx = entry.getKey();
+          if (!allowed.contains(idx)) continue;
+
+          def tot = entry.getValue().total;
+
+          long sizeB   = (tot?.store?.size_in_bytes      != null ? tot.store.size_in_bytes      : 0L);
+          long docsCnt = (tot?.docs?.count               != null ? tot.docs.count               : 0L);
+          long cIndex  = (tot?.indexing?.index_total     != null ? tot.indexing.index_total     : 0L);
+          long cDelete = (tot?.indexing?.delete_total    != null ? tot.indexing.delete_total    : 0L);
+          long cSearch = (tot?.search?.query_total       != null ? tot.search.query_total       : 0L);
+          long cGet    = (tot?.get?.total                != null ? tot.get.total                : 0L);
+
+          String createdAt = null;
+          def cnode = creations[idx];
+          if (cnode != null && cnode.settings != null && cnode.settings.index != null && cnode.settings.index.creation_date != null) {
+            try {
+              long ms = Long.parseLong(cnode.settings.index.creation_date.toString());
+              createdAt = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toString();
+            } catch (Exception e) { }
+          }
+
+          def prev = prevMap.get(idx);
+
+          String lastWrite = prev != null ? (String)prev.last_write_at : null;
+          String lastRead  = prev != null ? (String)prev.last_read_at  : null;
+
+          boolean isFirst = (prev == null);
+          boolean isReset = false;
+
+          if (!isFirst) {
+            long pIdx = (prev.index_total        instanceof Number ? ((Number)prev.index_total).longValue()        : 0L);
+            long pDel = (prev.delete_total       instanceof Number ? ((Number)prev.delete_total).longValue()       : 0L);
+            long pSea = (prev.search_query_total instanceof Number ? ((Number)prev.search_query_total).longValue() : 0L);
+            long pGet = (prev.get_total          instanceof Number ? ((Number)prev.get_total).longValue()          : 0L);
+
+            isReset = (cIndex < pIdx) || (cDelete < pDel) || (cSearch < pSea) || (cGet < pGet);
+
+            if (!isReset) {
+              if (cIndex > pIdx || cDelete > pDel) {
+                lastWrite = now;
+              }
+              if (cSearch > pSea || cGet > pGet) {
+                lastRead = now;
+              }
+            }
+          }
+
+          Map doc = new HashMap();
+          doc.put("index", idx);
+          doc.put("size_bytes", sizeB);
+          doc.put("docs_count", docsCnt);
+          doc.put("created_at", createdAt);
+          doc.put("last_write_at", lastWrite);
+          doc.put("last_read_at",  lastRead);
+          doc.put("updated_at", now);
+          doc.put("counters", [
+            "index_total":        cIndex,
+            "delete_total":       cDelete,
+            "search_query_total": cSearch,
+            "get_total":          cGet
+          ]);
+
+          docs.add(doc);
+
+          if (alsoIndexRaw) {
+            def raw = new HashMap(doc);
+            raw.put("@timestamp", now);
+            rawDocs.add(raw);
+          }
+        }
+
+        return ["docs": docs, "rawDocs": rawDocs];
+      """,
+    "lang": "painless",
+    "position": {
+      "offset": 166,
+      "start": 141,
+      "end": 191
+    },
     "caused_by": {
-      "type": "json_parse_exception",
-      "reason": """Unexpected character ('#' (code 35)): was expecting double-quote to start field name
- at [Source: (org.elasticsearch.common.bytes.ReleasableBytesReference$1); line: 1, column: 135]"""
+      "type": "illegal_argument_exception",
+      "reason": "unexpected token [','] was expecting one of [{<EOF>, ';'}]."
     }
   },
   "status": 400
