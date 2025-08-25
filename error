@@ -1,9 +1,20 @@
-[!] CLIENT: /16t_elkbackup is mounted as xfs, not nfs*. Skipping rm.
-Failed to restart autossh-nfs-tunnel.service: Interactive authentication required.
-See system logs and 'systemctl status autossh-nfs-tunnel.service' for details.
-● autossh-nfs-tunnel.service - AutoSSH tunnels nfs on local port 3335 to remote 2049
-   Loaded: loaded (/etc/systemd/system/autossh-nfs-tunnel.service; enabled; vendor preset: disabled)
-   Active: failed (Result: exit-code) since Tue 2025-08-05 09:07:41 CEST; 2 weeks 6 days ago
- Main PID: 1315 (code=exited, status=217/USER)
-[*] CLIENT: Mounting localhost:/elkbackup -> /16t_elkbackup
-mount: only root can use "--options" option
+{
+  "error": {
+    "root_cause": [
+      {
+        "type": "x_content_parse_exception",
+        "reason": """[1:135] Unexpected character ('#' (code 35)): was expecting double-quote to start field name
+ at [Source: (org.elasticsearch.common.bytes.ReleasableBytesReference$1); line: 1, column: 135]"""
+      }
+    ],
+    "type": "x_content_parse_exception",
+    "reason": """[1:135] Unexpected character ('#' (code 35)): was expecting double-quote to start field name
+ at [Source: (org.elasticsearch.common.bytes.ReleasableBytesReference$1); line: 1, column: 135]""",
+    "caused_by": {
+      "type": "json_parse_exception",
+      "reason": """Unexpected character ('#' (code 35)): was expecting double-quote to start field name
+ at [Source: (org.elasticsearch.common.bytes.ReleasableBytesReference$1); line: 1, column: 135]"""
+    }
+  },
+  "status": 400
+}
